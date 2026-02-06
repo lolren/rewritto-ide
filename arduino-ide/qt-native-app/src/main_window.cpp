@@ -6318,16 +6318,21 @@ void MainWindow::rebuildContextToolbar() {
   const QColor borderColor =
       blendColors(borderBase, accentColor, darkTheme ? 0.44 : 0.22);
   const QColor toolbarTextColor = textColor;
-  const QColor buttonBackground = pal.color(QPalette::Button);
-  const QColor buttonTextColor = pal.color(QPalette::ButtonText);
+  const QColor themeButtonColor = pal.color(QPalette::Highlight);
+  const QColor themeButtonText = pal.color(QPalette::HighlightedText);
+  const QColor buttonBackground = themeButtonColor.isValid() ? themeButtonColor : accentColor;
+  const QColor buttonTextColor =
+      themeButtonText.isValid() ? themeButtonText : readableForeground(buttonBackground);
   const QColor buttonBorder =
       blendColors(borderBase, buttonTextColor, darkTheme ? 0.20 : 0.12);
   const QColor buttonHover =
-      blendColors(buttonBackground, highlightColor, darkTheme ? 0.20 : 0.12);
+      blendColors(buttonBackground, panelColor, darkTheme ? 0.14 : 0.10);
   const QColor buttonPressed =
-      blendColors(buttonBackground, highlightColor, darkTheme ? 0.30 : 0.20);
-  const QColor checkedBackground = pal.color(QPalette::Highlight);
-  const QColor checkedTextColor = pal.color(QPalette::HighlightedText);
+      blendColors(buttonBackground, panelColor, darkTheme ? 0.22 : 0.16);
+  const QColor checkedBackground =
+      blendColors(buttonBackground, accentColor, darkTheme ? 0.18 : 0.12);
+  const QColor checkedTextColor =
+      readableForeground(checkedBackground);
   const QColor comboBackground = baseColor;
   const QColor comboBorder = borderBase;
 
