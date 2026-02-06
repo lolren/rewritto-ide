@@ -2040,9 +2040,9 @@ void MainWindow::createLayout() {
 
   // Add the toolbars to the window in strict order
   addToolBar(Qt::TopToolBarArea, buildToolBar_);
-  addToolBarBreak(Qt::TopToolBarArea);
   addToolBar(Qt::TopToolBarArea, fontToolBar_);
   addToolBar(Qt::RightToolBarArea, contextModeToolBar_);
+  enforceToolbarLayout();
   if (actionToggleFontToolBar_) {
     connect(actionToggleFontToolBar_, &QAction::toggled, this,
             [this](bool visible) {
@@ -3069,6 +3069,7 @@ void MainWindow::restoreStateFromSettings() {
   }
 
   settings.endGroup();
+  enforceToolbarLayout();
   updateWelcomeVisibility();
   refreshBoardOptions();
 
@@ -6106,6 +6107,30 @@ void MainWindow::updateBoardPortIndicator() {
     }
     portMenu_->setTitle(tr("Port: %1").arg(portText.isEmpty() ? tr("(none)") : portText));
   }
+}
+
+void MainWindow::enforceToolbarLayout() {
+  if (!buildToolBar_ || !fontToolBar_) {
+    return;
+  }
+
+  const bool contextVisible = fontToolBar_->isVisible();
+  const bool modeVisible = contextModeToolBar_ ? contextModeToolBar_->isVisible() : true;
+
+  removeToolBar(buildToolBar_);
+  removeToolBar(fontToolBar_);
+  addToolBar(Qt::TopToolBarArea, buildToolBar_);
+  addToolBar(Qt::TopToolBarArea, fontToolBar_);
+  removeToolBarBreak(fontToolBar_);
+  insertToolBarBreak(fontToolBar_);
+
+  if (contextModeToolBar_) {
+    removeToolBar(contextModeToolBar_);
+    addToolBar(Qt::RightToolBarArea, contextModeToolBar_);
+    contextModeToolBar_->setVisible(modeVisible);
+  }
+
+  fontToolBar_->setVisible(contextVisible);
 }
 
 void MainWindow::setContextToolbarMode(ContextToolbarMode mode) {

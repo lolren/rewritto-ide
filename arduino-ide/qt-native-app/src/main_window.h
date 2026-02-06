@@ -349,6 +349,7 @@ class MainWindow final : public QMainWindow {
   void createActions();
   void createMenus();
   void createLayout();
+  void enforceToolbarLayout();
   void updateFontFromToolbar();
   void setContextToolbarMode(ContextToolbarMode mode);
   void rebuildContextToolbar();
