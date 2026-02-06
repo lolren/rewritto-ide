@@ -30,30 +30,26 @@ PlatformFilterProxyModel::PlatformFilterProxyModel(QObject* parent)
 }
 
 void PlatformFilterProxyModel::setIdColumn(int column) {
-  beginFilterChange();
   idColumn_ = column;
-  endFilterChange();
+  invalidateFilter();
 }
 
 void PlatformFilterProxyModel::setInstalledColumn(int column) {
-  beginFilterChange();
   installedColumn_ = column;
-  endFilterChange();
+  invalidateFilter();
 }
 
 void PlatformFilterProxyModel::setLatestColumn(int column) {
-  beginFilterChange();
   latestColumn_ = column;
-  endFilterChange();
+  invalidateFilter();
 }
 
 void PlatformFilterProxyModel::setShowMode(ShowMode mode) {
   if (showMode_ == mode) {
     return;
   }
-  beginFilterChange();
   showMode_ = mode;
-  endFilterChange();
+  invalidateFilter();
 }
 
 PlatformFilterProxyModel::ShowMode PlatformFilterProxyModel::showMode() const {
@@ -64,9 +60,8 @@ void PlatformFilterProxyModel::setVendorFilter(QString vendor) {
   if (vendorFilter_ == vendor) {
     return;
   }
-  beginFilterChange();
   vendorFilter_ = std::move(vendor);
-  endFilterChange();
+  invalidateFilter();
 }
 
 QString PlatformFilterProxyModel::vendorFilter() const {
@@ -77,9 +72,8 @@ void PlatformFilterProxyModel::setArchitectureFilter(QString architecture) {
   if (architectureFilter_ == architecture) {
     return;
   }
-  beginFilterChange();
   architectureFilter_ = std::move(architecture);
-  endFilterChange();
+  invalidateFilter();
 }
 
 QString PlatformFilterProxyModel::architectureFilter() const {
@@ -90,9 +84,8 @@ void PlatformFilterProxyModel::setTypeFilter(QString type) {
   if (typeFilter_ == type) {
     return;
   }
-  beginFilterChange();
   typeFilter_ = std::move(type);
-  endFilterChange();
+  invalidateFilter();
 }
 
 QString PlatformFilterProxyModel::typeFilter() const {

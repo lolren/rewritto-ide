@@ -256,13 +256,13 @@ QString commandErrorSummary(const CommandResult& result) {
   if (result.exitStatus != QProcess::NormalExit) {
     return QObject::tr("Process crashed.");
   }
-  const QString stderr = result.stderrText.trimmed();
-  const QString stdout = result.stdoutText.trimmed();
-  if (!stderr.isEmpty()) {
-    return stderr;
+  const QString stderrText = result.stderrText.trimmed();
+  const QString stdoutText = result.stdoutText.trimmed();
+  if (!stderrText.isEmpty()) {
+    return stderrText;
   }
-  if (!stdout.isEmpty()) {
-    return stdout;
+  if (!stdoutText.isEmpty()) {
+    return stdoutText;
   }
   return QObject::tr("Command failed (exit code %1).").arg(result.exitCode);
 }

@@ -32,9 +32,8 @@ class SnapshotsFilterProxyModel final : public QSortFilterProxyModel {
     if (query_ == query) {
       return;
     }
-    beginFilterChange();
     query_ = std::move(query);
-    endFilterChange();
+    invalidateFilter();
   }
 
  protected:
@@ -262,4 +261,3 @@ void CodeSnapshotsDialog::updateSelectionActions() {
     deleteButton_->setEnabled(hasSelection);
   }
 }
-
