@@ -1186,11 +1186,7 @@ void MainWindow::createActions() {
   actionGetBoardInfo_ = new QAction(tr("Get Board Info"), this);
 
   actionAbout_ = new QAction(tr("About"), this);
-
-  actionGettingStarted_ = new QAction(tr("Getting Started"), this);
-  actionReference_ = new QAction(tr("Reference"), this);
-  actionTroubleshooting_ = new QAction(tr("Troubleshooting"), this);
-  actionArduinoWebsite_ = new QAction(tr("Website"), this);
+  actionGithubPage_ = new QAction(tr("Github page"), this);
 
   // Additional Tools menu actions for Arduino IDE 2.x parity
   actionAutoFormat_ = new QAction(tr("Auto Format"), this);
@@ -1359,11 +1355,7 @@ void MainWindow::createMenus() {
   toolsMenu_->addAction(actionBurnBootloader_);
 
   QMenu* helpMenu = menuBar()->addMenu(tr("&Help"));
-  helpMenu->addAction(actionGettingStarted_);
-  helpMenu->addAction(actionReference_);
-  helpMenu->addAction(actionTroubleshooting_);
-  helpMenu->addAction(actionArduinoWebsite_);
-  helpMenu->addSeparator();
+  helpMenu->addAction(actionGithubPage_);
   helpMenu->addAction(actionAbout_);
 
   // Connect actions to their handlers
@@ -1958,20 +1950,8 @@ void MainWindow::createMenus() {
     showAbout();
   });
 
-  connect(actionGettingStarted_, &QAction::triggered, this, [this] {
-    QDesktopServices::openUrl(QUrl("https://docs.arduino.cc/"));
-  });
-
-  connect(actionReference_, &QAction::triggered, this, [this] {
-    QDesktopServices::openUrl(QUrl("https://www.arduino.cc/reference/en/"));
-  });
-
-  connect(actionTroubleshooting_, &QAction::triggered, this, [this] {
-    QDesktopServices::openUrl(QUrl("https://support.arduino.cc/hc/en-us"));
-  });
-
-  connect(actionArduinoWebsite_, &QAction::triggered, this, [this] {
-    QDesktopServices::openUrl(QUrl("https://www.arduino.cc/"));
+  connect(actionGithubPage_, &QAction::triggered, this, [this] {
+    QDesktopServices::openUrl(QUrl("https://github.com/lolren/rewritto-ide"));
   });
 
   // Moved to wireSignals()

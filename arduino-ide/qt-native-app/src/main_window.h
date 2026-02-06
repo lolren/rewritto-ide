@@ -241,10 +241,7 @@ class MainWindow final : public QMainWindow {
   QAction* actionBurnBootloader_ = nullptr;
   QAction* actionGetBoardInfo_ = nullptr;
   QAction* actionAbout_ = nullptr;
-  QAction* actionGettingStarted_ = nullptr;
-  QAction* actionReference_ = nullptr;
-  QAction* actionTroubleshooting_ = nullptr;
-  QAction* actionArduinoWebsite_ = nullptr;
+  QAction* actionGithubPage_ = nullptr;
 
   // Additional Tools menu actions
   QAction* actionAutoFormat_ = nullptr;
