@@ -6114,20 +6114,19 @@ void MainWindow::enforceToolbarLayout() {
     return;
   }
 
-  const bool contextVisible = fontToolBar_->isVisible();
-  const bool modeVisible = contextModeToolBar_ ? contextModeToolBar_->isVisible() : true;
+  const bool contextVisible =
+      actionToggleFontToolBar_ ? actionToggleFontToolBar_->isChecked()
+                               : fontToolBar_->isVisible();
 
-  removeToolBar(buildToolBar_);
-  removeToolBar(fontToolBar_);
   addToolBar(Qt::TopToolBarArea, buildToolBar_);
   addToolBar(Qt::TopToolBarArea, fontToolBar_);
   removeToolBarBreak(fontToolBar_);
   insertToolBarBreak(fontToolBar_);
+  buildToolBar_->setVisible(true);
 
   if (contextModeToolBar_) {
-    removeToolBar(contextModeToolBar_);
     addToolBar(Qt::RightToolBarArea, contextModeToolBar_);
-    contextModeToolBar_->setVisible(modeVisible);
+    contextModeToolBar_->setVisible(true);
   }
 
   fontToolBar_->setVisible(contextVisible);
