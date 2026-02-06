@@ -1,0 +1,87 @@
+# Build directories
+build/
+build-*/
+dist/
+install/
+*.AppImage
+
+# CMake files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# Qt files
+*.autosave
+*.user
+*.pro.user
+*.qmlc
+*.jsc
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
+*.qmlc
+*.jsc
+.moc/
+
+# Test results
+Testing/
+CTestTestfile.cmake
+CTestTestfile.cmake.in
+ctest-xdg-*
+
+# Downloads and tools
+.tools/
+*.deb
+*.tar.gz
+*.tgz
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.orig
+
+# OS files
+.DS_Store
+Thumbs.db
+directory.dat
+directory.lock
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+codex*.txt
+gemini*.md
+
+# Local configuration
+.local/
+*.local
+
+# Node.js (from original Arduino IDE - kept for reference)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Backup files
+*.backup
+*~

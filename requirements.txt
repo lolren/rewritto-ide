@@ -1,0 +1,133 @@
+# Rewritto Ide - Build Requirements
+# ====================================
+# This file lists all dependencies required to build Rewritto Ide
+# from source on Linux.
+
+## Build Tools
+# ------------
+cmake >= 3.21
+gcc/g++ >= 11.0 (with C++20 support)
+make or ninja
+pkg-config
+
+## Qt6 Dependencies
+# -----------------
+qt6-base >= 6.2.0
+qt6-tools >= 6.2.0
+
+## Qt6 Components Required
+# ------------------------
+Qt6Core
+Qt6Widgets
+Qt6Network
+Qt6Test (for building tests)
+
+## System Libraries
+# -----------------
+libstdc++ (GNU Standard C++ Library)
+pthread (POSIX Threads)
+libdl (Dynamic Loading Library)
+
+## Optional Dependencies (for Runtime)
+# -------------------------------------
+# These are auto-downloaded by the AppImage build script
+arduino-cli (latest)
+arduino-language-server 0.7.7
+clangd-18
+
+## Development Dependencies (for Testing)
+# ----------------------------------------
+CTest (comes with CMake)
+Qt6 Test Framework
+
+## Installation on Ubuntu/Debian
+# ===============================
+sudo apt update
+sudo apt install -y \
+    cmake \
+    build-essential \
+    qt6-base-dev \
+    qt6-tools-dev \
+    qt6-webengine-dev \
+    pkg-config
+
+## Installation on Arch Linux
+# ============================
+sudo pacman -S qt6-base qt6-tools cmake gcc make
+
+## Installation on Fedora
+# ========================
+sudo dnf install \
+    qt6-qtbase \
+    qt6-qttools \
+    cmake \
+    gcc-c++ \
+    make
+
+## Building from Source
+# =====================
+# If Qt6 is not available in your distribution, you can build it from source:
+# https://wiki.qt.io/Qt_For_Tools_and_Technologies
+
+## Runtime Dependencies (for running Rewritto Ide)
+# ===================================================
+- Qt6 Runtime (Core, Widgets, Network)
+- g++ runtime library
+- X11 libraries
+- POSIX threads library
+- Standard C++ library
+
+## Additional Tools Used During Build
+# =====================================
+- curl (for downloading Arduino CLI and language server)
+- tar (for extracting archives)
+- gzip (for decompression)
+- sed, grep, awk (for text processing)
+
+## Platform-Specific Notes
+# =========================
+
+### Ubuntu 22.04 LTS
+Qt6 packages are available in the universe repository.
+
+### Ubuntu 20.04 LTS
+May need to add PPA for Qt6:
+sudo add-apt-repository ppa:ubuntu-sdk-team/ppa
+sudo apt update
+
+### Arch Linux
+Qt6 packages are in the official repositories.
+
+### openSUSE Tumbleweed
+Qt6 packages are in the official repositories.
+
+## Minimum Supported Versions
+# ============================
+- GCC: 11.0
+- Qt6: 6.2.0
+- CMake: 3.21
+- Linux Kernel: 5.4 (for proper c++20 support)
+
+## Known Issues and Workarounds
+# ===============================
+
+1. Qt6 not found error:
+   - Ensure Qt6 development packages are installed
+   - Set Qt6_DIR environment variable to Qt6 installation
+
+2. Build errors on older systems:
+   - Ensure GCC version is at least 11.0
+   - Some C++20 features may not be available in older compilers
+
+3. Network-related features require proper Qt6 Network module
+
+## Testing Dependencies
+# =====================
+# To run the test suite:
+- Qt6 Test module
+- CTest (part of CMake)
+
+## Distribution Packaging
+# ========================
+# For building AppImage distributions, see:
+# arduino-ide/qt-native-app/packaging/appimage/build-appimage.sh

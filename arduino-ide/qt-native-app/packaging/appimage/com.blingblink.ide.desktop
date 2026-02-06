@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Rewritto Ide
+GenericName=Arduino IDE
+Comment=Native Qt6 Arduino-compatible IDE for Linux
+Exec=rewritto-ide %F
+Icon=com.blingblink.ide
+Categories=Development;IDE;Electronics;
+Terminal=false
+MimeType=text/x-arduino;text/x-c++src;
+StartupNotify=true
+Keywords=arduino;ide;electronics;sketch;microcontroller;avr;

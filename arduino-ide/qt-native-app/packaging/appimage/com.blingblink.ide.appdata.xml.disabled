@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop">
+  <id>com.blingblink.ide</id>
+  <name>Rewritto Ide</name>
+  <summary>Native Qt6 Arduino-compatible IDE</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-only</project_license>
+  <developer id="com.blingblink">
+    <name>BlingBlink</name>
+  </developer>
+  <description>
+    <p>Rewritto Ide is a native Qt6 implementation of an Arduino-compatible IDE for Linux.</p>
+    <p>
+      Key features:
+    </p>
+    <ul>
+      <li>Sketch editing with syntax highlighting and code intelligence</li>
+      <li>Board and Library management via Arduino CLI</li>
+      <li>Compilation and upload with progress tracking</li>
+      <li>Serial Monitor and Serial Plotter</li>
+      <li>Debugging support with GDB/MI2</li>
+      <li>LSP-based code completion and diagnostics</li>
+      <li>Multi-cursor editing and advanced text features</li>
+      <li>Build profiles (Release/Debug)</li>
+      <li>Configurable keymaps and themes</li>
+    </ul>
+    <p>
+      Built with Qt6 and designed for performance and native integration.
+    </p>
+    <p>
+      Uses Arduino CLI, arduino-language-server, and clangd under the hood.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.blingblink.ide.desktop</launchable>
+  <provides>
+    <binary>rewritto-ide</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+  <categories>
+    <category>Development</category>
+    <category>IDE</category>
+    <category>Electronics</category>
+  </categories>
+  <keywords>
+    <keyword>arduino</keyword>
+    <keyword>ide</keyword>
+    <keyword>electronics</keyword>
+    <keyword>sketch</keyword>
+    <keyword>microcontroller</keyword>
+    <keyword>avr</keyword>
+  </keywords>
+  <releases>
+    <release version="1.0.0" date="2024-01-30">
+      <description>
+        <p>Initial release with full feature parity to Arduino IDE 2.x</p>
+        <p>Includes multi-cursor editing, build profiles, advanced debugging, and more.</p>
+      </description>
+    </release>
+  </releases>
+</component>
