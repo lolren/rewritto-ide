@@ -2583,17 +2583,6 @@ void MainWindow::createLayout() {
 }
 
 void MainWindow::wireSignals() {
-  auto loadSketchbookDir = [] {
-    QSettings settings;
-    settings.beginGroup("Preferences");
-    QString dir = settings.value("sketchbookDir").toString();
-    settings.endGroup();
-    if (dir.trimmed().isEmpty()) {
-      dir = defaultSketchbookDir();
-    }
-    return QDir(dir).absolutePath();
-  };
-
   if (boardsManager_) {
     connect(boardsManager_, &BoardsManagerDialog::platformsChanged, this,
             [this] { refreshInstalledBoards(); });
@@ -2794,6 +2783,7 @@ void MainWindow::wireSignals() {
   connect(arduinoCli_, &ArduinoCli::diagnosticFound, this,
           [this](const QString& filePath, int line, int column,
                  const QString& severity, const QString& message) {
+            Q_UNUSED(message);
             CodeEditor::Diagnostic d;
             d.startLine = qMax(0, line - 1);
             d.startCharacter = qMax(0, column - 1);
@@ -3047,11 +3037,15 @@ void MainWindow::wireSignals() {
           });
 
   connect(editor_, &EditorWidget::documentClosed, this, [this](const QString& path) {
+    Q_UNUSED(path);
     // Document closed - could trigger re-analysis
     updateUploadActionStates();
   });
 
-  connect(editor_, &EditorWidget::breakpointsChanged, this, [this](const QString& path, const QVector<int>& lines) {
+  connect(editor_, &EditorWidget::breakpointsChanged, this,
+          [this](const QString& path, const QVector<int>& lines) {
+    Q_UNUSED(path);
+    Q_UNUSED(lines);
     // Breakpoints changed - sync with debugger if needed
   });
 }
@@ -4378,6 +4372,7 @@ void MainWindow::refreshOutline() {
   lsp_->request("textDocument/documentSymbol", 
     QJsonObject{{"textDocument", QJsonObject{{"uri", toFileUri(path)}}}},
     [this](const QJsonValue& result, const QJsonObject&) {
+      Q_UNUSED(result);
       if (outlineModel_) {
         outlineModel_->clear();
         // Parsing logic for symbols would go here for full parity
