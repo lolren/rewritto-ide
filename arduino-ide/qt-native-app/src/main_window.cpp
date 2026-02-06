@@ -1157,7 +1157,8 @@ void MainWindow::createActions() {
 
   actionToggleBold_ = new QAction(tr("Bold"), this);
   actionToggleBold_->setCheckable(true);
-  actionToggleBold_->setIcon(QIcon::fromTheme("format-text-bold"));
+  actionToggleBold_->setIconText(tr("B"));
+  actionToggleBold_->setToolTip(tr("Bold"));
 
   actionContextBuildMode_ = new QAction(tr("Build"), this);
   actionContextBuildMode_->setCheckable(true);
@@ -6667,9 +6668,9 @@ void MainWindow::rebuildContextToolbar() {
       actionToggleBold_->setChecked(currentFont.bold());
     }
 
-    actionToggleBold_->setIcon(
-        QIcon::fromTheme("format-text-bold",
-                         style()->standardIcon(QStyle::SP_TitleBarShadeButton)));
+    actionToggleBold_->setIcon(QIcon());
+    actionToggleBold_->setIconText(tr("B"));
+    actionToggleBold_->setToolTip(tr("Bold"));
     fontToolBar_->addAction(actionToggleBold_);
 
     connect(fontFamilyCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
