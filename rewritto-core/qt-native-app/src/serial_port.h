@@ -3,6 +3,7 @@
 #include <QObject>
 
 class QSocketNotifier;
+class QTimer;
 
 class SerialPort final : public QObject {
   Q_OBJECT
@@ -25,12 +26,16 @@ class SerialPort final : public QObject {
   void errorOccurred(QString message);
 
  private:
+#if defined(Q_OS_UNIX)
   int fd_ = -1;
+  QSocketNotifier* readNotifier_ = nullptr;
+#elif defined(Q_OS_WIN)
+  qintptr nativeHandle_ = -1;
+  QTimer* readTimer_ = nullptr;
+#endif
   QString portPath_;
   int baudRate_ = 0;
-  QSocketNotifier* readNotifier_ = nullptr;
 
   void setOpen(bool open);
   void handleReadable();
 };
-

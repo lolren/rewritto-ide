@@ -25,10 +25,11 @@ Artifacts are published in GitHub Releases:
 
 - `rewritto-ide-linux-x86_64-native.tar.gz`
 - `Rewritto-ide-x86_64.AppImage`
+- `rewritto-ide-windows-x86_64.zip`
 
 Release workflow:
 
-- `rewritto-core/.github/workflows/release.yml`
+- `.github/workflows/release.yml`
 
 Detailed instructions:
 

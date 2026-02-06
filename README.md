@@ -93,10 +93,11 @@ The AppImage will be created in `dist/Rewritto-ide-x86_64.AppImage`.
 
 ### Release Artifacts
 
-Two Linux artifacts are published per release:
+Three artifacts are published per release:
 
-- Native tarball: `rewritto-ide-linux-x86_64-native.tar.gz`
-- AppImage: `Rewritto-ide-x86_64.AppImage`
+- Linux native tarball: `rewritto-ide-linux-x86_64-native.tar.gz`
+- Linux AppImage: `Rewritto-ide-x86_64.AppImage`
+- Windows native zip: `rewritto-ide-windows-x86_64.zip`
 
 Local release output folder:
 
@@ -104,7 +105,12 @@ Local release output folder:
 
 GitHub release workflow:
 
-- `rewritto-core/.github/workflows/release.yml`
+- `.github/workflows/release.yml`
+
+### Windows Build
+```powershell
+.\build-windows.ps1
+```
 
 ## Usage
 

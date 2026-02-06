@@ -43,6 +43,7 @@ AppImage output:
 Native release package (tarball):
 
 - `rewritto-core/qt-native-app/dist/rewritto-ide-linux-x86_64-native.tar.gz`
+- `rewritto-core/qt-native-app/dist/rewritto-ide-windows-x86_64.zip`
 
 Create it locally:
 
@@ -53,6 +54,12 @@ OUT_DIR="$PWD/rewritto-core/qt-native-app/dist" \
 bash rewritto-core/qt-native-app/packaging/release/package-native.sh
 ```
 
+Create the Windows package (on Windows host):
+
+```powershell
+.\build-windows.ps1
+```
+
 GitHub Releases are produced by the workflow at:
 
-- `rewritto-core/.github/workflows/release.yml`
+- `.github/workflows/release.yml`

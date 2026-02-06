@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux
+            os: ubuntu-22.04
+            artifact_name: rewritto-linux-artifacts
+          - target: windows
+            os: windows-2022
+            artifact_name: rewritto-windows-artifacts
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: matrix.target == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            curl \
+            desktop-file-utils \
+            patchelf \
+            pkg-config \
+            qt6-base-dev \
+            qt6-tools-dev
+
+      - name: Install Qt for Windows
+        if: matrix.target == 'windows'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.7.2"
+          host: "windows"
+          target: "desktop"
+          arch: "win64_msvc2022_64"
+          cache: true
+
+      - name: Build Linux artifacts
+        if: matrix.target == 'linux'
+        run: |
+          mkdir -p release-artifacts
+          cmake -S rewritto-core/qt-native-app -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"
+
+          chmod +x rewritto-core/qt-native-app/packaging/release/package-native.sh
+          BUILD_DIR="${GITHUB_WORKSPACE}/build" \
+          OUT_DIR="${GITHUB_WORKSPACE}/release-artifacts" \
+          bash rewritto-core/qt-native-app/packaging/release/package-native.sh
+
+          chmod +x rewritto-core/qt-native-app/packaging/appimage/build-appimage.sh
+          BUILD_DIR="${GITHUB_WORKSPACE}/build" \
+          OUT_DIR="${GITHUB_WORKSPACE}/release-artifacts" \
+          bash rewritto-core/qt-native-app/packaging/appimage/build-appimage.sh
+
+      - name: Build Windows artifact
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE\release-artifacts" -Force | Out-Null
+          $qtCmakeDir = Join-Path $env:QT_ROOT_DIR "lib\cmake\Qt6"
+          & "$env:GITHUB_WORKSPACE\build-windows.ps1" `
+            -QtPrefix $qtCmakeDir `
+            -BuildDir "$env:GITHUB_WORKSPACE\build-windows" `
+            -OutDir "$env:GITHUB_WORKSPACE\release-artifacts"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: release-artifacts/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lah release-artifacts
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-artifacts/*.tar.gz
+            release-artifacts/*.AppImage
+            release-artifacts/*.zip
+          generate_release_notes: true
