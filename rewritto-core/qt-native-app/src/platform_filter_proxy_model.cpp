@@ -3,6 +3,7 @@
 #include <QAbstractItemModel>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QtGlobal>
 
 namespace {
 constexpr int kRolePlatformJson = Qt::UserRole + 2;
@@ -29,19 +30,28 @@ PlatformFilterProxyModel::PlatformFilterProxyModel(QObject* parent)
     : QSortFilterProxyModel(parent) {
 }
 
+void PlatformFilterProxyModel::refreshFilter() {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
+  beginFilterChange();
+  endFilterChange();
+#else
+  invalidateFilter();
+#endif
+}
+
 void PlatformFilterProxyModel::setIdColumn(int column) {
   idColumn_ = column;
-  invalidateFilter();
+  refreshFilter();
 }
 
 void PlatformFilterProxyModel::setInstalledColumn(int column) {
   installedColumn_ = column;
-  invalidateFilter();
+  refreshFilter();
 }
 
 void PlatformFilterProxyModel::setLatestColumn(int column) {
   latestColumn_ = column;
-  invalidateFilter();
+  refreshFilter();
 }
 
 void PlatformFilterProxyModel::setShowMode(ShowMode mode) {
@@ -49,7 +59,7 @@ void PlatformFilterProxyModel::setShowMode(ShowMode mode) {
     return;
   }
   showMode_ = mode;
-  invalidateFilter();
+  refreshFilter();
 }
 
 PlatformFilterProxyModel::ShowMode PlatformFilterProxyModel::showMode() const {
@@ -61,7 +71,7 @@ void PlatformFilterProxyModel::setVendorFilter(QString vendor) {
     return;
   }
   vendorFilter_ = std::move(vendor);
-  invalidateFilter();
+  refreshFilter();
 }
 
 QString PlatformFilterProxyModel::vendorFilter() const {
@@ -73,7 +83,7 @@ void PlatformFilterProxyModel::setArchitectureFilter(QString architecture) {
     return;
   }
   architectureFilter_ = std::move(architecture);
-  invalidateFilter();
+  refreshFilter();
 }
 
 QString PlatformFilterProxyModel::architectureFilter() const {
@@ -85,7 +95,7 @@ void PlatformFilterProxyModel::setTypeFilter(QString type) {
     return;
   }
   typeFilter_ = std::move(type);
-  invalidateFilter();
+  refreshFilter();
 }
 
 QString PlatformFilterProxyModel::typeFilter() const {

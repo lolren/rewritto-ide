@@ -30,6 +30,8 @@ class PlatformFilterProxyModel final : public QSortFilterProxyModel {
                         const QModelIndex& sourceParent) const override;
 
  private:
+  void refreshFilter();
+
   int idColumn_ = 0;
   int installedColumn_ = 1;
   int latestColumn_ = 2;

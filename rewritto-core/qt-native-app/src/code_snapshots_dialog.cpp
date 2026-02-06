@@ -14,6 +14,7 @@
 #include <QSortFilterProxyModel>
 #include <QStandardItemModel>
 #include <QTableView>
+#include <QtGlobal>
 
 namespace {
 constexpr int kColWhen = 0;
@@ -33,7 +34,7 @@ class SnapshotsFilterProxyModel final : public QSortFilterProxyModel {
       return;
     }
     query_ = std::move(query);
-    invalidateFilter();
+    refreshFilter();
   }
 
  protected:
@@ -82,6 +83,15 @@ class SnapshotsFilterProxyModel final : public QSortFilterProxyModel {
   }
 
  private:
+  void refreshFilter() {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
+    beginFilterChange();
+    endFilterChange();
+#else
+    invalidateFilter();
+#endif
+  }
+
   QString query_;
 };
 
