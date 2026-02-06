@@ -154,6 +154,7 @@ class MainWindow final : public QMainWindow {
   QAction* actionRefreshBoards_ = nullptr;
   QAction* actionRefreshPorts_ = nullptr;
   QAction* actionSelectBoard_ = nullptr;
+  bool boardSelectorDialogOpen_ = false;
   QProcess* boardsRefreshProcess_ = nullptr;
   QProcess* portsRefreshProcess_ = nullptr;
   bool portsRefreshQueued_ = false;

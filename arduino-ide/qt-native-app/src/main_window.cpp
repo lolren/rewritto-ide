@@ -2044,15 +2044,6 @@ void MainWindow::createLayout() {
   if (auto* view = boardCombo_->view()) {
       view->viewport()->installEventFilter(this);
   }
-  QToolButton* boardSearchButton = new QToolButton(boardSelectorContainer);
-  boardSearchButton->setObjectName("BoardSearchButton");
-  boardSearchButton->setAutoRaise(true);
-  boardSearchButton->setIcon(style()->standardIcon(QStyle::SP_FileDialogContentsView));
-  boardSearchButton->setToolTip(tr("Search boards"));
-  connect(boardSearchButton, &QToolButton::clicked, this,
-          [this] { showSelectBoardDialog(); });
-
-  boardLayout->addWidget(boardSearchButton);
   boardLayout->addWidget(boardCombo_);
 
   portCombo_ = new QComboBox(boardSelectorContainer);
@@ -4863,6 +4854,11 @@ void MainWindow::showSelectBoardDialog() {
     return;
   }
 
+  if (boardSelectorDialogOpen_) {
+    return;
+  }
+  boardSelectorDialogOpen_ = true;
+
   // Show a dialog that lists all available boards and allows selection
   auto* dialog = new BoardSelectorDialog(this);
   dialog->setWindowTitle(tr("Select Board"));
@@ -4871,6 +4867,10 @@ void MainWindow::showSelectBoardDialog() {
   // Fetch all available boards
   QProcess* p = new QProcess(this);
   connect(p, &QProcess::finished, this, [this, dialog, p](int exitCode, QProcess::ExitStatus) {
+    if (!boardSelectorDialogOpen_) {
+      return;
+    }
+
     if (exitCode == 0) {
       const QByteArray data = p->readAllStandardOutput();
       const QJsonDocument doc = QJsonDocument::fromJson(data);
@@ -4962,6 +4962,19 @@ void MainWindow::showSelectBoardDialog() {
 
     dialog->deleteLater();
     p->deleteLater();
+    boardSelectorDialogOpen_ = false;
+  });
+
+  connect(p, &QProcess::errorOccurred, this, [this, dialog, p](QProcess::ProcessError) {
+    if (!boardSelectorDialogOpen_) {
+      return;
+    }
+
+    QMessageBox::warning(this, tr("Failed to Load Boards"),
+                         tr("Could not start Arduino CLI to retrieve board list."));
+    dialog->deleteLater();
+    p->deleteLater();
+    boardSelectorDialogOpen_ = false;
   });
 
   const QStringList args =
