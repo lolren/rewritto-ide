@@ -8,7 +8,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network Test)
 
-qt_standard_project_setup()
+if (COMMAND qt_standard_project_setup)
+  qt_standard_project_setup()
+endif()
 
 qt_add_executable(rewritto-ide MANUAL_FINALIZATION
   resources/resources.qrc
@@ -95,7 +97,9 @@ target_link_libraries(rewritto-ide PRIVATE
   Qt6::Network
 )
 
-qt_finalize_executable(rewritto-ide)
+if (COMMAND qt_finalize_executable)
+  qt_finalize_executable(rewritto-ide)
+endif()
 
 include(CTest)
 if (BUILD_TESTING)
