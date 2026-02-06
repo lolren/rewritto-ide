@@ -5,6 +5,7 @@
 #include "boards_manager_dialog.h"
 #include "build_output_parser.h"
 #include "code_editor.h"
+#include "code_snapshot_compare_dialog.h"
 #include "code_snapshot_store.h"
 #include "code_snapshots_dialog.h"
 #include "editor_widget.h"
@@ -168,6 +169,33 @@ QString colorHex(const QColor& color) {
 QColor readableForeground(const QColor& background) {
   return background.lightnessF() >= 0.55 ? QColor(QStringLiteral("#0f172a"))
                                          : QColor(QStringLiteral("#f8fafc"));
+}
+
+QString normalizeSnapshotRelativePath(QString rel) {
+  rel = rel.trimmed();
+  rel.replace('\\', '/');
+  rel = QDir::cleanPath(rel);
+  if (rel == QStringLiteral(".")) {
+    return {};
+  }
+  while (rel.startsWith(QStringLiteral("./"))) {
+    rel = rel.mid(2);
+  }
+  return rel;
+}
+
+bool shouldIgnoreSnapshotComparePath(const QString& relPath) {
+  const QString rel = normalizeSnapshotRelativePath(relPath);
+  if (rel.isEmpty()) {
+    return true;
+  }
+  if (rel == QStringLiteral(".rewritto") || rel.startsWith(QStringLiteral(".rewritto/"))) {
+    return true;
+  }
+  if (rel == QStringLiteral(".git") || rel.startsWith(QStringLiteral(".git/"))) {
+    return true;
+  }
+  return false;
 }
 
 bool sendLinuxDesktopNotification(const QString& summary,
@@ -2131,7 +2159,7 @@ void MainWindow::createLayout() {
   connect(actionSnapshotCapture_, &QAction::triggered, this,
           [this] { captureCodeSnapshot(false); });
   connect(actionSnapshotCompare_, &QAction::triggered, this,
-          [this] { showToast(tr("Snapshot compare is not implemented yet.")); });
+          [this] { showCodeSnapshotCompare(); });
   connect(actionSnapshotGallery_, &QAction::triggered, this,
           [this] { showCodeSnapshotsGallery(); });
 
@@ -6710,6 +6738,59 @@ QHash<QString, QByteArray> MainWindow::snapshotFileOverridesForSketch(
   return out;
 }
 
+QHash<QString, QByteArray> MainWindow::currentSketchFilesForCompare(
+    const QString& sketchFolder,
+    QString* outError) const {
+  QHash<QString, QByteArray> out;
+  const QString sketchRoot = QDir(sketchFolder).absolutePath();
+  if (sketchRoot.trimmed().isEmpty() || !QDir(sketchRoot).exists()) {
+    if (outError) {
+      *outError = tr("Sketch folder is not available.");
+    }
+    return out;
+  }
+
+  QDir sketchDir(sketchRoot);
+  QDirIterator it(sketchRoot,
+                  QDir::Files | QDir::Hidden | QDir::NoSymLinks,
+                  QDirIterator::Subdirectories);
+  while (it.hasNext()) {
+    const QString absPath = it.next();
+    const QFileInfo info(absPath);
+    if (!info.exists() || !info.isFile() || info.isSymLink()) {
+      continue;
+    }
+
+    const QString rel = normalizeSnapshotRelativePath(sketchDir.relativeFilePath(absPath));
+    if (rel.isEmpty() || shouldIgnoreSnapshotComparePath(rel)) {
+      continue;
+    }
+
+    QFile file(absPath);
+    if (!file.open(QIODevice::ReadOnly)) {
+      if (outError) {
+        *outError = tr("Failed to read '%1'.").arg(rel);
+      }
+      return {};
+    }
+    out.insert(rel, file.readAll());
+  }
+
+  const QHash<QString, QByteArray> overrides = snapshotFileOverridesForSketch(sketchRoot);
+  for (auto it = overrides.constBegin(); it != overrides.constEnd(); ++it) {
+    const QString rel = normalizeSnapshotRelativePath(it.key());
+    if (rel.isEmpty() || shouldIgnoreSnapshotComparePath(rel)) {
+      continue;
+    }
+    out.insert(rel, it.value());
+  }
+
+  if (outError) {
+    outError->clear();
+  }
+  return out;
+}
+
 void MainWindow::captureCodeSnapshot(bool promptForComment) {
   const QString sketchFolder = currentSketchFolderPath();
   if (sketchFolder.isEmpty()) {
@@ -6780,6 +6861,33 @@ void MainWindow::captureCodeSnapshot(bool promptForComment) {
   } else {
     showToast(tr("Snapshot created."));
   }
+}
+
+void MainWindow::showCodeSnapshotCompare() {
+  const QString sketchFolder = currentSketchFolderPath();
+  if (sketchFolder.isEmpty()) {
+    showToast(tr("Open a sketch first."));
+    return;
+  }
+
+  QString listError;
+  const QVector<CodeSnapshotStore::SnapshotMeta> snapshots =
+      CodeSnapshotStore::listSnapshots(sketchFolder, &listError);
+  if (snapshots.isEmpty()) {
+    showToast(tr("Create at least one snapshot first."));
+    return;
+  }
+
+  QString filesError;
+  const QHash<QString, QByteArray> currentFiles =
+      currentSketchFilesForCompare(sketchFolder, &filesError);
+  if (!filesError.trimmed().isEmpty()) {
+    showToast(filesError);
+    return;
+  }
+
+  CodeSnapshotCompareDialog dialog(sketchFolder, currentFiles, this);
+  dialog.exec();
 }
 
 void MainWindow::showCodeSnapshotsGallery() {

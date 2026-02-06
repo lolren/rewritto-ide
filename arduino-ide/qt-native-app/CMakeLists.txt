@@ -25,6 +25,8 @@ qt_add_executable(rewritto-ide MANUAL_FINALIZATION
 	  src/build_output_parser.h
 	  src/code_editor.cpp
 	  src/code_editor.h
+	  src/code_snapshot_compare_dialog.cpp
+	  src/code_snapshot_compare_dialog.h
 	  src/code_snapshot_store.cpp
 	  src/code_snapshot_store.h
 	  src/code_snapshots_dialog.cpp
