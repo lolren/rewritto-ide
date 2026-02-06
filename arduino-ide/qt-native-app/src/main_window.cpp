@@ -3194,14 +3194,18 @@ void MainWindow::refreshConnectedPorts() {
         settings.beginGroup(kSettingsGroup);
         const QString savedPort = settings.value(kPortKey).toString().trimmed();
         settings.endGroup();
-        const QString preferredPort = !selectedBeforeRefresh.isEmpty()
-                                           ? selectedBeforeRefresh
-                                           : savedPort;
+	        const QString preferredPort = !selectedBeforeRefresh.isEmpty()
+	                                           ? selectedBeforeRefresh
+	                                           : savedPort;
+        const QColor portTextColor = palette().color(QPalette::Text);
+        const QColor portDisabledColor =
+            palette().color(QPalette::Disabled, QPalette::Text);
 
-        const QSignalBlocker blockPortSignals(portCombo_);
-        portCombo_->clear();
-        portCombo_->addItem(tr("Select Port..."), QString{});
-        int preferredIndex = -1;
+	        const QSignalBlocker blockPortSignals(portCombo_);
+	        portCombo_->clear();
+	        portCombo_->addItem(tr("Select Port..."), QString{});
+        portCombo_->setItemData(0, portDisabledColor, Qt::ForegroundRole);
+	        int preferredIndex = -1;
         
 		        for (const QJsonValue& v : arr) {
 		          const QJsonObject obj = v.toObject();
@@ -3233,12 +3237,14 @@ void MainWindow::refreshConnectedPorts() {
 	                displayText += QString(" (%1)").arg(protoDisplay);
 	              }
 	            }
-	            portCombo_->addItem(displayText, portAddress);
-	            const int addedIndex = portCombo_->count() - 1;
-	            portCombo_->setItemData(
-	                addedIndex,
-	                protocol.isEmpty() ? QStringLiteral("serial") : protocol,
-	                kPortRoleProtocol);
+		            portCombo_->addItem(displayText, portAddress);
+		            const int addedIndex = portCombo_->count() - 1;
+                portCombo_->setItemData(addedIndex, portTextColor,
+                                        Qt::ForegroundRole);
+		            portCombo_->setItemData(
+		                addedIndex,
+		                protocol.isEmpty() ? QStringLiteral("serial") : protocol,
+		                kPortRoleProtocol);
 	            if (!boardName.isEmpty()) {
 	              portCombo_->setItemData(addedIndex, boardName,
 	                                      kPortRoleDetectedBoardName);
@@ -3255,14 +3261,16 @@ void MainWindow::refreshConnectedPorts() {
 
 	        if (preferredIndex < 0 && !preferredPort.isEmpty()) {
 	          const int missingIndex = 1;  // directly under the placeholder
-	          portCombo_->insertItem(missingIndex, tr("%1 (missing)").arg(preferredPort),
-                                   preferredPort);
-	          portCombo_->setItemData(missingIndex, true, kPortRoleMissing);
-	          if (auto* model = qobject_cast<QStandardItemModel*>(portCombo_->model())) {
-	            if (QStandardItem* item = model->item(missingIndex)) {
-	              item->setEnabled(false);
-	            }
-	          }
+		          portCombo_->insertItem(missingIndex, tr("%1 (missing)").arg(preferredPort),
+		                                   preferredPort);
+		          portCombo_->setItemData(missingIndex, true, kPortRoleMissing);
+              portCombo_->setItemData(missingIndex, portDisabledColor,
+                                      Qt::ForegroundRole);
+		          if (auto* model = qobject_cast<QStandardItemModel*>(portCombo_->model())) {
+		            if (QStandardItem* item = model->item(missingIndex)) {
+		              item->setEnabled(false);
+		            }
+		          }
 	          preferredIndex = missingIndex;
 	        }
 
@@ -6351,28 +6359,28 @@ void MainWindow::rebuildContextToolbar() {
       "  margin-right: 6px;"
       "}"
       "QToolBar#ContextToolBar QToolButton {"
-      "  color: %14;"
-      "  border: 1px solid %6;"
+      "  color: %13;"
+      "  border: 1px solid %5;"
       "  border-radius: 6px;"
-      "  background-color: %7;"
+      "  background-color: %6;"
       "  padding: 5px 8px;"
       "}"
       "QToolBar#ContextToolBar QToolButton:hover {"
-      "  background-color: %8;"
+      "  background-color: %7;"
       "}"
       "QToolBar#ContextToolBar QToolButton:pressed {"
-      "  background-color: %9;"
+      "  background-color: %8;"
       "}"
       "QToolBar#ContextToolBar QToolButton:checked {"
-      "  background-color: %10;"
-      "  border-color: %10;"
-      "  color: %11;"
+      "  background-color: %9;"
+      "  border-color: %9;"
+      "  color: %10;"
       "}"
       "QToolBar#ContextToolBar QComboBox {"
-      "  color: %14;"
-      "  border: 1px solid %12;"
+      "  color: %13;"
+      "  border: 1px solid %11;"
       "  border-radius: 6px;"
-      "  background-color: %13;"
+      "  background-color: %12;"
       "  padding: 3px 22px 3px 8px;"
       "  min-height: 22px;"
       "}"
@@ -6381,8 +6389,8 @@ void MainWindow::rebuildContextToolbar() {
       "  width: 20px;"
       "}")
       .arg(colorHex(gradientStartColor), colorHex(gradientEndColor),
-           colorHex(borderColor), colorHex(toolbarTextColor), colorHex(accentColor),
-           colorHex(buttonBorder), colorHex(buttonBackground), colorHex(buttonHover),
+           colorHex(borderColor), colorHex(toolbarTextColor), colorHex(buttonBorder),
+           colorHex(buttonBackground), colorHex(buttonHover),
            colorHex(buttonPressed), colorHex(checkedBackground),
            colorHex(checkedTextColor), colorHex(comboBorder),
            colorHex(comboBackground), colorHex(buttonTextColor)));
