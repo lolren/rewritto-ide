@@ -37,6 +37,7 @@ jobs:
             cmake \
             curl \
             desktop-file-utils \
+            libgl1-mesa-dev \
             patchelf \
             pkg-config \
             qt6-base-dev \
@@ -49,7 +50,7 @@ jobs:
           version: "6.7.2"
           host: "windows"
           target: "desktop"
-          arch: "win64_msvc2022_64"
+          arch: "win64_msvc2019_64"
           cache: true
 
       - name: Build Linux artifacts
@@ -78,7 +79,8 @@ jobs:
           & "$env:GITHUB_WORKSPACE\build-windows.ps1" `
             -QtPrefix $qtCmakeDir `
             -BuildDir "$env:GITHUB_WORKSPACE\build-windows" `
-            -OutDir "$env:GITHUB_WORKSPACE\release-artifacts"
+            -OutDir "$env:GITHUB_WORKSPACE\release-artifacts" `
+            -Generator "Visual Studio 17 2022"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
