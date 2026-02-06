@@ -14,4 +14,7 @@
     <file alias="upload.png">icons/upload.png</file>
     <file alias="verify.png">icons/verify.png</file>
   </qresource>
+  <qresource prefix="/config">
+    <file alias="additional-boards.txt">additional-boards.txt</file>
+  </qresource>
 </RCC>

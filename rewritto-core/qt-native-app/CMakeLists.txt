@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(rewritto-ide LANGUAGES CXX)
+project(rewritto-ide VERSION 0.4.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -90,6 +90,26 @@ qt_add_executable(rewritto-ide MANUAL_FINALIZATION
   src/welcome_widget.cpp
   src/welcome_widget.h
 )
+
+set(REWRITTO_IDE_VERSION "${PROJECT_VERSION}")
+find_package(Git QUIET)
+if (GIT_FOUND)
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" describe --tags --dirty --always
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    OUTPUT_VARIABLE REWRITTO_IDE_GIT_VERSION
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
+  if (REWRITTO_IDE_GIT_VERSION)
+    set(REWRITTO_IDE_VERSION "${REWRITTO_IDE_GIT_VERSION}")
+  endif()
+endif()
+
+target_compile_definitions(rewritto-ide PRIVATE
+  REWRITTO_IDE_VERSION="${REWRITTO_IDE_VERSION}"
+)
+message(STATUS "rewritto-ide version: ${REWRITTO_IDE_VERSION}")
 
 target_link_libraries(rewritto-ide PRIVATE
   Qt6::Core

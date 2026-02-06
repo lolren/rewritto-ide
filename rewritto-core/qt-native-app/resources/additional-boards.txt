@@ -1,0 +1,18 @@
+# Rewritto-ide additional board manager URLs
+# One URL per line. Lines starting with # are ignored.
+#
+# This file is used as a default source for board_manager.additional_urls.
+# You can edit your runtime copy at:
+#   /home/rewritto/additional-boards.txt
+
+https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+https://arduino.esp8266.com/stable/package_esp8266com_index.json
+https://adafruit.github.io/arduino-board-index/package_adafruit_index.json
+https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+https://github.com/stm32duino/BoardManagerFiles/raw/main/package_stmicroelectronics_index.json
+https://www.pjrc.com/teensy/package_teensy_index.json
+https://drazzy.com/package_drazzy.com_index.json
+https://mcudude.github.io/MegaCore/package_MCUdude_MegaCore_index.json
+https://mcudude.github.io/MiniCore/package_MCUdude_MiniCore_index.json
+https://mcudude.github.io/MightyCore/package_MCUdude_MightyCore_index.json
+https://mcudude.github.io/MicroCore/package_MCUdude_MicroCore_index.json

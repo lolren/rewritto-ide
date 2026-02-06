@@ -158,6 +158,7 @@ class MainWindow final : public QMainWindow {
   QAction* actionRefreshBoards_ = nullptr;
   QAction* actionRefreshPorts_ = nullptr;
   QAction* actionSelectBoard_ = nullptr;
+  QAction* actionBoardSetupWizard_ = nullptr;
   bool boardSelectorDialogOpen_ = false;
   QProcess* boardsRefreshProcess_ = nullptr;
   QProcess* portsRefreshProcess_ = nullptr;
@@ -376,6 +377,15 @@ class MainWindow final : public QMainWindow {
   void rebuildExamplesMenu();
   void updateWelcomePage();
   void updateWelcomeVisibility();
+  void maybeRunBoardSetupWizard();
+  void runBoardSetupWizard();
+  QStringList loadAdditionalBoardUrlsPresets() const;
+  bool mergeAdditionalBoardUrlsIntoPreferences(
+      QStringList urlsToMerge,
+      QString* outError = nullptr,
+      QStringList* outMergedUrls = nullptr);
+  bool runBoardSetupCoreInstall(const QStringList& coreIds,
+                                QString* outError = nullptr);
   void migrateSketchListsToFolders();
   QString normalizeSketchFolderPath(const QString& path) const;
   QString currentSketchFolderPath() const;
@@ -617,6 +627,7 @@ class MainWindow final : public QMainWindow {
 
   QSet<QString> lastDetectedPorts_;
   QSet<QString> favoriteFqbns_;
+  bool boardSetupWizardShownThisSession_ = false;
 
   void loadFavorites();
   void saveFavorites();

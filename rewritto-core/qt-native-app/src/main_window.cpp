@@ -115,6 +115,10 @@
 #include <QUrl>
 #include <QVBoxLayout>
 
+#ifndef REWRITTO_IDE_VERSION
+#define REWRITTO_IDE_VERSION "0.4.0"
+#endif
+
 static constexpr auto kSettingsGroup = "MainWindow";
 static constexpr auto kLastSketchKey = "lastSketch";
 static constexpr auto kRecentSketchesKey = "recentSketches";
@@ -132,6 +136,7 @@ static constexpr auto kBreakpointsKey = "breakpoints";
 static constexpr auto kDebugWatchesKey = "debugWatches";
 static constexpr auto kStateVersionKey = "stateVersion";
 static constexpr auto kSketchBoardSelectionsKey = "sketchBoardSelections";
+static constexpr auto kBoardSetupWizardCompletedKey = "boardSetupWizardCompleted";
 static constexpr int kCurrentStateVersion = 1;
 
 namespace {
@@ -564,6 +569,111 @@ QString defaultSketchbookDir() {
   return preferred;
 }
 
+QStringList normalizeStringList(QStringList values) {
+  for (QString& value : values) {
+    value = value.trimmed();
+  }
+  values.removeAll(QString{});
+  values.removeDuplicates();
+  return values;
+}
+
+QStringList parseAdditionalBoardsText(const QString& text) {
+  QStringList urls;
+  const QStringList lines = text.split(QLatin1Char('\n'));
+  urls.reserve(lines.size());
+
+  for (QString line : lines) {
+    const int commentAt = line.indexOf(QLatin1Char('#'));
+    if (commentAt >= 0) {
+      line = line.left(commentAt);
+    }
+    const QString trimmed = line.trimmed();
+    if (!trimmed.isEmpty()) {
+      urls << trimmed;
+    }
+  }
+
+  return normalizeStringList(urls);
+}
+
+QString settingsRootForAuxFiles() {
+  QSettings settings;
+  QFileInfo settingsInfo(settings.fileName());
+  QDir dir = settingsInfo.absoluteDir();
+
+  const QString orgName = QCoreApplication::organizationName().trimmed();
+  if (!orgName.isEmpty() &&
+      dir.dirName().compare(orgName, Qt::CaseInsensitive) == 0) {
+    dir.cdUp();
+  }
+
+  return dir.absolutePath();
+}
+
+QString additionalBoardsFilePath() {
+  const QString root = settingsRootForAuxFiles();
+  if (!root.trimmed().isEmpty()) {
+    return QDir(root).absoluteFilePath(QStringLiteral("additional-boards.txt"));
+  }
+  return QDir(QDir::homePath())
+      .absoluteFilePath(QStringLiteral("rewritto/additional-boards.txt"));
+}
+
+QString readTextFileBestEffort(const QString& path) {
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    return {};
+  }
+  return QString::fromUtf8(file.readAll());
+}
+
+bool writeTextFileBestEffort(const QString& path, const QByteArray& data) {
+  if (path.trimmed().isEmpty()) {
+    return false;
+  }
+  const QFileInfo info(path);
+  if (!QDir().mkpath(info.absolutePath())) {
+    return false;
+  }
+  QSaveFile save(path);
+  if (!save.open(QIODevice::WriteOnly | QIODevice::Text)) {
+    return false;
+  }
+  if (save.write(data) != data.size()) {
+    return false;
+  }
+  return save.commit();
+}
+
+QStringList loadSeededAdditionalBoardsUrls() {
+  static const QString resourcePath =
+      QStringLiteral(":/config/additional-boards.txt");
+  const QString userPath = additionalBoardsFilePath();
+
+  if (!userPath.trimmed().isEmpty() && !QFileInfo::exists(userPath)) {
+    QFile seededResource(resourcePath);
+    if (seededResource.open(QIODevice::ReadOnly | QIODevice::Text)) {
+      const QByteArray data = seededResource.readAll();
+      (void)writeTextFileBestEffort(userPath, data);
+    }
+  }
+
+  if (!userPath.trimmed().isEmpty()) {
+    const QString userText = readTextFileBestEffort(userPath);
+    const QStringList parsedUser = parseAdditionalBoardsText(userText);
+    if (!parsedUser.isEmpty()) {
+      return parsedUser;
+    }
+  }
+
+  QFile resource(resourcePath);
+  if (!resource.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    return {};
+  }
+  return parseAdditionalBoardsText(QString::fromUtf8(resource.readAll()));
+}
+
 bool isThemeDark(QString theme) {
   theme = theme.trimmed().toLower();
   if (theme == QStringLiteral("system")) {
@@ -918,6 +1028,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     app->installEventFilter(this);
   }
 	updateSketchbookView();
+  (void)loadSeededAdditionalBoardsUrls();
   {
     QSettings settings;
     settings.beginGroup("Preferences");
@@ -1250,6 +1361,7 @@ void MainWindow::createActions() {
   actionRefreshBoards_ = new QAction(tr("Refresh Boards"), this);
   actionRefreshPorts_ = new QAction(tr("Refresh Ports"), this);
   actionSelectBoard_ = new QAction(tr("Select Board\u2026"), this);
+  actionBoardSetupWizard_ = new QAction(tr("Board Setup Wizard\u2026"), this);
 
   actionBoardsManager_ = new QAction(tr("Boards Manager\u2026"), this);
   actionBoardsManager_->setCheckable(true);
@@ -1896,6 +2008,10 @@ void MainWindow::createMenus() {
     showGoToSymbol();
   });
 
+  connect(actionCommandPalette_, &QAction::triggered, this, [this] {
+    showCommandPalette();
+  });
+
   connect(actionSidebarSearch_, &QAction::triggered, this, [this] {
     if (searchDock_) {
       searchDock_->show();
@@ -1968,6 +2084,10 @@ void MainWindow::createMenus() {
   // === Board Selection Actions ===
   connect(actionSelectBoard_, &QAction::triggered, this, [this] {
     showSelectBoardDialog();
+  });
+
+  connect(actionBoardSetupWizard_, &QAction::triggered, this, [this] {
+    runBoardSetupWizard();
   });
 
   connect(actionRefreshBoards_, &QAction::triggered, this, [this] {
@@ -3355,68 +3475,74 @@ void MainWindow::refreshInstalledBoards() {
     if (exitCode == 0) {
       const QByteArray data = p->readAllStandardOutput();
       const QJsonDocument doc = QJsonDocument::fromJson(data);
-      
+
       QJsonArray arr;
       if (doc.isObject()) {
-          arr = doc.object().value("boards").toArray();
+        arr = doc.object().value("boards").toArray();
       } else if (doc.isArray()) {
-          arr = doc.array();
+        arr = doc.array();
       }
 
-      if (!arr.isEmpty()) {
-        auto* proxy = static_cast<BoardFilterProxyModel*>(boardCombo_->model());
-        auto* sourceModel = qobject_cast<QStandardItemModel*>(proxy->sourceModel());
-        sourceModel->clear();
-        
-        // Add placeholder
-        auto* placeholder = new QStandardItem(tr("Select Board..."));
-        placeholder->setData(QString(), Qt::UserRole);
-        sourceModel->appendRow(placeholder);
+      auto* proxy = static_cast<BoardFilterProxyModel*>(boardCombo_->model());
+      auto* sourceModel =
+          proxy ? qobject_cast<QStandardItemModel*>(proxy->sourceModel())
+                : nullptr;
+      if (!sourceModel) {
+        p->deleteLater();
+        return;
+      }
 
-        // Collect unique boards
-        QMap<QString, QString> uniqueBoards; // name -> fqbn
-        for (const QJsonValue& v : arr) {
-          const QJsonObject obj = v.toObject();
-          const QString name = obj.value("name").toString();
-          const QString fqbn = obj.value("fqbn").toString();
-          if (!name.isEmpty() && !fqbn.isEmpty()) {
-            if (!uniqueBoards.contains(name)) {
-              uniqueBoards[name] = fqbn;
-            }
-          }
-        }
-        
-        if (uniqueBoards.isEmpty()) {
-            output_->appendLine(tr("Warning: No boards found. Please install platforms via Boards Manager."));
-        }
+      sourceModel->clear();
+      auto* placeholder = new QStandardItem(tr("Select Board..."));
+      placeholder->setData(QString(), Qt::UserRole);
+      sourceModel->appendRow(placeholder);
 
-        // Add boards to source model
-        for (auto it = uniqueBoards.begin(); it != uniqueBoards.end(); ++it) {
-            auto* item = new QStandardItem(it.key());
-            item->setData(it.value(), Qt::UserRole);
-            item->setData(isFavorite(it.value()), kRoleIsFavorite);
-            sourceModel->appendRow(item);
+      QMap<QString, QString> uniqueBoards;  // name -> fqbn
+      for (const QJsonValue& v : arr) {
+        const QJsonObject obj = v.toObject();
+        const QString name = obj.value("name").toString();
+        const QString fqbn = obj.value("fqbn").toString();
+        if (!name.isEmpty() && !fqbn.isEmpty() && !uniqueBoards.contains(name)) {
+          uniqueBoards[name] = fqbn;
         }
+      }
 
-	        QString savedFqbn = preferredFqbnForSketch(currentSketchFolderPath());
-	        if (savedFqbn.isEmpty()) {
-	          QSettings settings;
-	          settings.beginGroup(kSettingsGroup);
-	          savedFqbn = settings.value(kFqbnKey).toString().trimmed();
-	          settings.endGroup();
-	        }
-
-        if (proxy) {
-            proxy->sort(0, Qt::AscendingOrder); // Trigger sort
+      if (uniqueBoards.isEmpty()) {
+        if (output_) {
+          output_->appendLine(
+              tr("Warning: No boards found. Please run Board Setup Wizard or install platforms via Boards Manager."));
         }
+        maybeRunBoardSetupWizard();
+      }
 
-        // Restore selection index
-        if (!savedFqbn.isEmpty()) {
-          const int index = boardCombo_->findData(savedFqbn);
-          if (index >= 0) {
-            boardCombo_->setCurrentIndex(index);
-          }
+      for (auto it = uniqueBoards.begin(); it != uniqueBoards.end(); ++it) {
+        auto* item = new QStandardItem(it.key());
+        item->setData(it.value(), Qt::UserRole);
+        item->setData(isFavorite(it.value()), kRoleIsFavorite);
+        sourceModel->appendRow(item);
+      }
+
+      QString savedFqbn = preferredFqbnForSketch(currentSketchFolderPath());
+      if (savedFqbn.isEmpty()) {
+        QSettings settings;
+        settings.beginGroup(kSettingsGroup);
+        savedFqbn = settings.value(kFqbnKey).toString().trimmed();
+        settings.endGroup();
+      }
+
+      if (proxy) {
+        proxy->sort(0, Qt::AscendingOrder);
+      }
+
+      if (!savedFqbn.isEmpty()) {
+        const int index = boardCombo_->findData(savedFqbn);
+        if (index >= 0) {
+          boardCombo_->setCurrentIndex(index);
+        } else if (boardCombo_->count() > 0) {
+          boardCombo_->setCurrentIndex(0);
         }
+      } else if (boardCombo_->count() > 0) {
+        boardCombo_->setCurrentIndex(0);
       }
     }
     p->deleteLater();
@@ -3425,6 +3551,335 @@ void MainWindow::refreshInstalledBoards() {
   const QStringList args =
       arduinoCli_->withGlobalFlags({"board", "listall", "--format", "json"});
   p->start(arduinoCli_->arduinoCliPath(), args);
+}
+
+void MainWindow::maybeRunBoardSetupWizard() {
+  if (boardSetupWizardShownThisSession_) {
+    return;
+  }
+
+  QSettings settings;
+  settings.beginGroup(kSettingsGroup);
+  const bool wizardAlreadyHandled =
+      settings.value(kBoardSetupWizardCompletedKey, false).toBool();
+  settings.endGroup();
+  if (wizardAlreadyHandled) {
+    boardSetupWizardShownThisSession_ = true;
+    return;
+  }
+
+  boardSetupWizardShownThisSession_ = true;
+  QTimer::singleShot(0, this, [this] { runBoardSetupWizard(); });
+}
+
+QStringList MainWindow::loadAdditionalBoardUrlsPresets() const {
+  return loadSeededAdditionalBoardsUrls();
+}
+
+bool MainWindow::mergeAdditionalBoardUrlsIntoPreferences(
+    QStringList urlsToMerge,
+    QString* outError,
+    QStringList* outMergedUrls) {
+  urlsToMerge = normalizeStringList(std::move(urlsToMerge));
+
+  QString sketchbookDir;
+  QStringList configuredUrls;
+  QSettings settings;
+  settings.beginGroup(QStringLiteral("Preferences"));
+  sketchbookDir = settings.value(QStringLiteral("sketchbookDir")).toString();
+  if (settings.contains(QStringLiteral("additionalUrls"))) {
+    configuredUrls =
+        settings.value(QStringLiteral("additionalUrls")).toStringList();
+  }
+  settings.endGroup();
+
+  const ArduinoCliConfigSnapshot snapshot = readArduinoCliConfigSnapshot(
+      arduinoCli_ ? arduinoCli_->arduinoCliConfigPath() : QString{});
+  if (configuredUrls.isEmpty()) {
+    configuredUrls = snapshot.additionalUrls;
+  }
+
+  QStringList merged = normalizeStringList(configuredUrls);
+  merged.append(urlsToMerge);
+  merged = normalizeStringList(merged);
+
+  settings.beginGroup(QStringLiteral("Preferences"));
+  settings.setValue(QStringLiteral("additionalUrls"), merged);
+  settings.endGroup();
+
+  if (outMergedUrls) {
+    *outMergedUrls = merged;
+  }
+
+  if (sketchbookDir.trimmed().isEmpty()) {
+    sketchbookDir = snapshot.userDir;
+  }
+  if (sketchbookDir.trimmed().isEmpty()) {
+    sketchbookDir = defaultSketchbookDir();
+  }
+  QDir().mkpath(sketchbookDir);
+
+  if (!arduinoCli_) {
+    if (outError) {
+      outError->clear();
+    }
+    return true;
+  }
+
+  const QString configPath = arduinoCli_->arduinoCliConfigPath();
+  if (configPath.trimmed().isEmpty()) {
+    if (outError) {
+      *outError = tr("Arduino CLI config path is unavailable.");
+    }
+    return true;
+  }
+
+  QString configError;
+  const bool ok =
+      updateArduinoCliConfig(configPath, sketchbookDir, merged, &configError);
+  if (!ok) {
+    if (outError) {
+      *outError = configError.trimmed();
+    }
+    return false;
+  }
+
+  if (outError) {
+    outError->clear();
+  }
+  return true;
+}
+
+bool MainWindow::runBoardSetupCoreInstall(const QStringList& coreIds,
+                                          QString* outError) {
+  if (!arduinoCli_) {
+    if (outError) {
+      *outError = tr("Arduino CLI is not initialized.");
+    }
+    return false;
+  }
+  if (arduinoCli_->isRunning()) {
+    if (outError) {
+      *outError = tr("Another Arduino CLI command is currently running.");
+    }
+    return false;
+  }
+
+  const QString cliPath = arduinoCli_->arduinoCliPath().trimmed();
+  if (cliPath.isEmpty()) {
+    if (outError) {
+      *outError = tr("Arduino CLI path is empty.");
+    }
+    return false;
+  }
+
+  if (output_) {
+    output_->appendLine(tr("[Board Setup] Updating board index..."));
+  }
+  CommandResult updateIndexResult = runCommandBlocking(
+      cliPath,
+      arduinoCli_->withGlobalFlags(
+          {QStringLiteral("core"), QStringLiteral("update-index")}),
+      {}, {}, 600000);
+  if (output_) {
+    if (!updateIndexResult.stdoutText.trimmed().isEmpty()) {
+      output_->appendLine(updateIndexResult.stdoutText.trimmed());
+    }
+    if (!updateIndexResult.stderrText.trimmed().isEmpty()) {
+      output_->appendLine(updateIndexResult.stderrText.trimmed());
+    }
+  }
+  if (!(updateIndexResult.started && !updateIndexResult.timedOut &&
+        updateIndexResult.exitStatus == QProcess::NormalExit &&
+        updateIndexResult.exitCode == 0)) {
+    if (outError) {
+      *outError = tr("Failed to update board index: %1")
+                      .arg(commandErrorSummary(updateIndexResult));
+    }
+    return false;
+  }
+
+  QStringList failures;
+  for (const QString& coreId : coreIds) {
+    const QString trimmedCore = coreId.trimmed();
+    if (trimmedCore.isEmpty()) {
+      continue;
+    }
+
+    if (output_) {
+      output_->appendLine(
+          tr("[Board Setup] Installing core %1 ...").arg(trimmedCore));
+    }
+    const CommandResult installResult = runCommandBlocking(
+        cliPath,
+        arduinoCli_->withGlobalFlags({QStringLiteral("core"),
+                                      QStringLiteral("install"), trimmedCore}),
+        {}, {}, 900000);
+
+    if (output_) {
+      if (!installResult.stdoutText.trimmed().isEmpty()) {
+        output_->appendLine(installResult.stdoutText.trimmed());
+      }
+      if (!installResult.stderrText.trimmed().isEmpty()) {
+        output_->appendLine(installResult.stderrText.trimmed());
+      }
+    }
+
+    const bool ok = installResult.started && !installResult.timedOut &&
+                    installResult.exitStatus == QProcess::NormalExit &&
+                    installResult.exitCode == 0;
+    if (!ok) {
+      failures << tr("%1 (%2)")
+                      .arg(trimmedCore, commandErrorSummary(installResult));
+    }
+  }
+
+  if (!failures.isEmpty()) {
+    if (outError) {
+      *outError = tr("Some cores failed to install:\n%1")
+                      .arg(failures.join(QStringLiteral("\n")));
+    }
+    return false;
+  }
+
+  if (outError) {
+    outError->clear();
+  }
+  return true;
+}
+
+void MainWindow::runBoardSetupWizard() {
+  auto markWizardHandled = [] {
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+    settings.setValue(kBoardSetupWizardCompletedKey, true);
+    settings.endGroup();
+  };
+
+  QMessageBox modeDialog(this);
+  modeDialog.setIcon(QMessageBox::Information);
+  modeDialog.setWindowTitle(tr("Board Setup Wizard"));
+  modeDialog.setText(tr("No board cores are available yet."));
+  modeDialog.setInformativeText(
+      tr("Choose how you want to configure board support."));
+  QPushButton* presetButton =
+      modeDialog.addButton(tr("Preset Cores"), QMessageBox::AcceptRole);
+  QPushButton* customButton =
+      modeDialog.addButton(tr("Custom Core"), QMessageBox::ActionRole);
+  QPushButton* laterButton =
+      modeDialog.addButton(tr("Later"), QMessageBox::RejectRole);
+  modeDialog.setDefaultButton(presetButton);
+  modeDialog.exec();
+
+  if (modeDialog.clickedButton() == laterButton ||
+      modeDialog.clickedButton() == nullptr) {
+    markWizardHandled();
+    return;
+  }
+
+  QStringList coreIds;
+  QStringList extraUrls;
+
+  if (modeDialog.clickedButton() == presetButton) {
+    const QStringList presetLabels = {
+        tr("Popular: Arduino AVR + ESP32 + ESP8266 + RP2040"),
+        tr("Arduino Official: AVR + megaAVR + SAMD + mbed Nano"),
+        tr("AVR Only: UNO/Nano/Mega"),
+    };
+    bool ok = false;
+    const QString selected = QInputDialog::getItem(
+        this, tr("Preset Core Bundle"), tr("Select a preset bundle:"),
+        presetLabels, 0, false, &ok);
+    if (!ok || selected.trimmed().isEmpty()) {
+      return;
+    }
+
+    if (selected == presetLabels.at(0)) {
+      coreIds << QStringLiteral("arduino:avr") << QStringLiteral("esp32:esp32")
+              << QStringLiteral("esp8266:esp8266")
+              << QStringLiteral("rp2040:rp2040");
+    } else if (selected == presetLabels.at(1)) {
+      coreIds << QStringLiteral("arduino:avr")
+              << QStringLiteral("arduino:megaavr")
+              << QStringLiteral("arduino:samd")
+              << QStringLiteral("arduino:mbed_nano");
+    } else {
+      coreIds << QStringLiteral("arduino:avr");
+    }
+  } else if (modeDialog.clickedButton() == customButton) {
+    bool coreOk = false;
+    const QString core = QInputDialog::getText(
+        this, tr("Custom Core"), tr("Core ID (packager:architecture):"),
+        QLineEdit::Normal, QStringLiteral("esp32:esp32"), &coreOk);
+    if (!coreOk || core.trimmed().isEmpty()) {
+      return;
+    }
+    if (!core.contains(QLatin1Char(':'))) {
+      QMessageBox::warning(this, tr("Invalid Core ID"),
+                           tr("Expected format: packager:architecture"));
+      return;
+    }
+    coreIds << core.trimmed();
+
+    bool urlOk = false;
+    const QString optionalUrl = QInputDialog::getText(
+        this, tr("Custom Board URL (Optional)"),
+        tr("Additional board manager URL (leave empty to skip):"),
+        QLineEdit::Normal, QString{}, &urlOk);
+    if (urlOk && !optionalUrl.trimmed().isEmpty()) {
+      extraUrls << optionalUrl.trimmed();
+    }
+  }
+
+  coreIds = normalizeStringList(coreIds);
+  if (coreIds.isEmpty()) {
+    return;
+  }
+
+  QStringList presetUrls = loadAdditionalBoardUrlsPresets();
+  presetUrls.append(extraUrls);
+  presetUrls = normalizeStringList(presetUrls);
+
+  QString mergedError;
+  if (!mergeAdditionalBoardUrlsIntoPreferences(presetUrls, &mergedError, nullptr)) {
+    QMessageBox::warning(
+        this, tr("Board Setup"),
+        tr("Could not update board manager URLs.\n\n%1").arg(mergedError));
+    return;
+  }
+  if (!mergedError.trimmed().isEmpty() && output_) {
+    output_->appendLine(
+        tr("[Board Setup] %1").arg(mergedError.trimmed()));
+  }
+
+  if (QMessageBox::question(
+          this, tr("Install Board Cores"),
+          tr("Install selected cores now?\n\n%1\n\nThis may take a few minutes.")
+              .arg(coreIds.join(QStringLiteral("\n"))),
+          QMessageBox::Yes | QMessageBox::No,
+          QMessageBox::Yes) != QMessageBox::Yes) {
+    markWizardHandled();
+    return;
+  }
+
+  QString installError;
+  const bool installed = runBoardSetupCoreInstall(coreIds, &installError);
+  markWizardHandled();
+
+  if (!installed) {
+    QMessageBox::warning(this, tr("Board Setup Failed"), installError);
+    if (actionBoardsManager_) {
+      actionBoardsManager_->trigger();
+    }
+    return;
+  }
+
+  showToast(tr("Board setup completed"));
+  if (boardsManager_) {
+    boardsManager_->refresh();
+  }
+  refreshInstalledBoards();
+  refreshConnectedPorts();
 }
 
 void MainWindow::refreshConnectedPorts() {
@@ -3606,6 +4061,9 @@ void MainWindow::rebuildBoardMenu() {
 
   if (actionSelectBoard_) {
     boardMenu_->addAction(actionSelectBoard_);
+  }
+  if (actionBoardSetupWizard_) {
+    boardMenu_->addAction(actionBoardSetupWizard_);
   }
   if (actionRefreshBoards_) {
     boardMenu_->addAction(actionRefreshBoards_);
@@ -5097,14 +5555,19 @@ void MainWindow::newSketch() {
   const QString sketchbookDir = defaultSketchbookDir();
   QDir().mkpath(sketchbookDir);
 
-  // Generate unique sketch name
-  int counter = 1;
+  // Generate timestamp-based sketch name with collision-safe fallback.
+  const QString baseName = QStringLiteral("sketch_%1")
+                               .arg(QDateTime::currentDateTime().toString(
+                                   QStringLiteral("yyyyMMdd_HHmmss")));
   QString sketchName;
   QString sketchPath;
+  int suffix = 0;
   do {
-    sketchName = counter == 1 ? tr("sketch") : tr("sketch_%1").arg(counter);
-    sketchPath = sketchbookDir + "/" + sketchName;
-    ++counter;
+    sketchName = suffix == 0
+                     ? baseName
+                     : QStringLiteral("%1_%2").arg(baseName).arg(suffix);
+    sketchPath = sketchbookDir + QStringLiteral("/") + sketchName;
+    ++suffix;
   } while (QDir(sketchPath).exists());
 
   // Create sketch folder and main .ino file
@@ -5200,6 +5663,89 @@ void MainWindow::showQuickOpen() {
     const QString folder = data.toString().trimmed();
     if (!folder.isEmpty()) {
       (void)openSketchFolderInUi(folder);
+    }
+  }
+  dialog->deleteLater();
+}
+
+void MainWindow::showCommandPalette() {
+  auto* dialog = new QuickPickDialog(this);
+  dialog->setPlaceholderText(tr("Type a command..."));
+
+  QVector<QuickPickDialog::Item> items;
+  auto addItem = [&items](const QString& id,
+                          const QString& label,
+                          const QString& detail) {
+    QuickPickDialog::Item item;
+    item.label = label;
+    item.detail = detail;
+    item.data = id;
+    items.append(item);
+  };
+
+  addItem(QStringLiteral("newSketch"), tr("New Sketch"),
+          tr("Create a new sketch"));
+  addItem(QStringLiteral("openSketch"), tr("Open Sketch"),
+          tr("Open an existing .ino sketch"));
+  addItem(QStringLiteral("openSketchFolder"), tr("Open Sketch Folder"),
+          tr("Open a sketch folder"));
+  addItem(QStringLiteral("verifySketch"), tr("Verify"),
+          tr("Compile current sketch"));
+  addItem(QStringLiteral("uploadSketch"), tr("Verify and Upload"),
+          tr("Compile and upload current sketch"));
+  addItem(QStringLiteral("selectBoard"), tr("Select Board"),
+          tr("Pick a board for current sketch"));
+  addItem(QStringLiteral("boardSetupWizard"), tr("Board Setup Wizard"),
+          tr("Configure board cores and URLs"));
+  addItem(QStringLiteral("openBoardsManager"), tr("Boards Manager"),
+          tr("Open board manager panel"));
+  addItem(QStringLiteral("openLibraryManager"), tr("Library Manager"),
+          tr("Open library manager panel"));
+  addItem(QStringLiteral("toggleSerialMonitor"), tr("Toggle Serial Monitor"),
+          tr("Show/hide serial monitor"));
+  addItem(QStringLiteral("toggleSerialPlotter"), tr("Toggle Serial Plotter"),
+          tr("Show/hide serial plotter"));
+  addItem(QStringLiteral("openPreferences"), tr("Preferences"),
+          tr("Open IDE settings"));
+
+  dialog->setItems(items);
+
+  if (dialog->exec() == QDialog::Accepted) {
+    const QString commandId = dialog->selectedData().toString().trimmed();
+    if (commandId == QStringLiteral("newSketch")) {
+      newSketch();
+    } else if (commandId == QStringLiteral("openSketch")) {
+      openSketch();
+    } else if (commandId == QStringLiteral("openSketchFolder")) {
+      openSketchFolder();
+    } else if (commandId == QStringLiteral("verifySketch")) {
+      verifySketch();
+    } else if (commandId == QStringLiteral("uploadSketch")) {
+      uploadSketch();
+    } else if (commandId == QStringLiteral("selectBoard")) {
+      showSelectBoardDialog();
+    } else if (commandId == QStringLiteral("boardSetupWizard")) {
+      runBoardSetupWizard();
+    } else if (commandId == QStringLiteral("openBoardsManager")) {
+      if (actionBoardsManager_) {
+        actionBoardsManager_->trigger();
+      }
+    } else if (commandId == QStringLiteral("openLibraryManager")) {
+      if (actionLibraryManager_) {
+        actionLibraryManager_->trigger();
+      }
+    } else if (commandId == QStringLiteral("toggleSerialMonitor")) {
+      if (actionSerialMonitor_) {
+        actionSerialMonitor_->trigger();
+      }
+    } else if (commandId == QStringLiteral("toggleSerialPlotter")) {
+      if (actionSerialPlotter_) {
+        actionSerialPlotter_->trigger();
+      }
+    } else if (commandId == QStringLiteral("openPreferences")) {
+      if (actionPreferences_) {
+        actionPreferences_->trigger();
+      }
     }
   }
   dialog->deleteLater();
@@ -6417,7 +6963,7 @@ void MainWindow::pushCurrentSketchToRemote() {
 void MainWindow::showAbout() {
   const QString appVersion =
       QCoreApplication::applicationVersion().trimmed().isEmpty()
-          ? QStringLiteral("0.2.0")
+          ? QStringLiteral(REWRITTO_IDE_VERSION)
           : QCoreApplication::applicationVersion().trimmed();
   QMessageBox::about(
       this,

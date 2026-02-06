@@ -19,6 +19,10 @@
 #include <QTranslator>
 #include <QtGlobal>
 
+#ifndef REWRITTO_IDE_VERSION
+#define REWRITTO_IDE_VERSION "0.4.0"
+#endif
+
 namespace {
 constexpr auto kBrandOrg = "Rewritto";
 constexpr auto kBrandApp = "Rewritto-ide";
@@ -147,7 +151,7 @@ int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
   QApplication::setApplicationName(kBrandApp);
   QApplication::setOrganizationName(kBrandOrg);
-  QApplication::setApplicationVersion(QStringLiteral("0.4.0"));
+  QApplication::setApplicationVersion(QStringLiteral(REWRITTO_IDE_VERSION));
   QApplication::setWindowIcon(QIcon(QStringLiteral(":/icons/app-icon.svg")));
 
   migrateLegacySettingsIfNeeded();
