@@ -1346,6 +1346,14 @@ void MainWindow::createActions() {
 
   actionOptimizeForDebug_ = new QAction(tr("Optimize for Debugging"), this);
   actionOptimizeForDebug_->setCheckable(true);
+  {
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+    const bool optimizeForDebug =
+        settings.value(kOptimizeForDebugKey, false).toBool();
+    settings.endGroup();
+    actionOptimizeForDebug_->setChecked(optimizeForDebug);
+  }
 
   actionShowSketchFolder_ = new QAction(tr("Show Sketch Folder"), this);
 
@@ -1527,6 +1535,7 @@ void MainWindow::createMenus() {
   sketchMenu->addAction(actionJustUpload_);
   sketchMenu->addAction(actionUploadUsingProgrammer_);
   sketchMenu->addAction(actionExportCompiledBinary_);
+  sketchMenu->addAction(actionOptimizeForDebug_);
   sketchMenu->addSeparator();
   sketchMenu->addAction(actionShowSketchFolder_);
   sketchMenu->addSeparator();
@@ -2042,6 +2051,15 @@ void MainWindow::createMenus() {
 
   connect(actionExportCompiledBinary_, &QAction::triggered, this, [this] {
     exportCompiledBinary();
+  });
+
+  connect(actionOptimizeForDebug_, &QAction::toggled, this, [this](bool enabled) {
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+    settings.setValue(kOptimizeForDebugKey, enabled);
+    settings.endGroup();
+    showToast(enabled ? tr("Optimize for Debugging enabled")
+                      : tr("Optimize for Debugging disabled"));
   });
 
   connect(actionShowSketchFolder_, &QAction::triggered, this, [this] {
@@ -5693,6 +5711,9 @@ void MainWindow::showCommandPalette() {
           tr("Compile current sketch"));
   addItem(QStringLiteral("uploadSketch"), tr("Verify and Upload"),
           tr("Compile and upload current sketch"));
+  addItem(QStringLiteral("toggleOptimizeDebug"),
+          tr("Toggle Optimize for Debugging"),
+          tr("Enable/disable compile debug optimization profile"));
   addItem(QStringLiteral("selectBoard"), tr("Select Board"),
           tr("Pick a board for current sketch"));
   addItem(QStringLiteral("boardSetupWizard"), tr("Board Setup Wizard"),
@@ -5722,6 +5743,10 @@ void MainWindow::showCommandPalette() {
       verifySketch();
     } else if (commandId == QStringLiteral("uploadSketch")) {
       uploadSketch();
+    } else if (commandId == QStringLiteral("toggleOptimizeDebug")) {
+      if (actionOptimizeForDebug_) {
+        actionOptimizeForDebug_->toggle();
+      }
     } else if (commandId == QStringLiteral("selectBoard")) {
       showSelectBoardDialog();
     } else if (commandId == QStringLiteral("boardSetupWizard")) {
@@ -5877,6 +5902,9 @@ void MainWindow::verifySketch() {
   if (verbose) {
     args << "--verbose";
   }
+  if (actionOptimizeForDebug_ && actionOptimizeForDebug_->isChecked()) {
+    args << "--optimize-for-debug";
+  }
 
   QDir buildDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation) + "/rewritto/build");
   buildDir.mkpath(buildDir.absolutePath());
@@ -6021,6 +6049,9 @@ void MainWindow::uploadSketch() {
 	  if (verbose) {
 	    args << "--verbose";
 	  }
+  if (actionOptimizeForDebug_ && actionOptimizeForDebug_->isChecked()) {
+    args << "--optimize-for-debug";
+  }
 
   QDir buildDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation) + "/rewritto/upload");
   buildDir.mkpath(buildDir.absolutePath());
@@ -6113,6 +6144,9 @@ void MainWindow::uploadUsingProgrammer() {
   QStringList args = {"compile", "--fqbn", fqbn, "--warnings", warningsLevel};
   if (verboseCompile) {
     args << "--verbose";
+  }
+  if (actionOptimizeForDebug_ && actionOptimizeForDebug_->isChecked()) {
+    args << "--optimize-for-debug";
   }
 
   QDir buildDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
