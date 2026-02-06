@@ -23,6 +23,7 @@ class EditorWidget final : public QWidget {
 
   bool openFile(const QString& filePath);
   bool reloadFileIfUnmodified(const QString& filePath);
+  void setSuppressDiskEvents(bool suppress);
   bool save();
   bool saveCurrentWithDialog();
   bool saveAs(const QString& filePath);
@@ -113,6 +114,7 @@ class EditorWidget final : public QWidget {
   QFileSystemWatcher* fileWatcher_ = nullptr;
   QTimer* fileChangedTimer_ = nullptr;
   QSet<QString> pendingFileChanges_;
+  bool suppressDiskEvents_ = false;
   QStringList closedFileStack_;
 
   QPlainTextEdit* currentEditor() const;

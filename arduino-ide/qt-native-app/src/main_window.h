@@ -357,6 +357,10 @@ class MainWindow final : public QMainWindow {
   void setContextToolbarMode(ContextToolbarMode mode);
   void restyleContextModeToolBar();
   void rebuildContextToolbar();
+  QHash<QString, QByteArray> snapshotFileOverridesForSketch(const QString& sketchFolder) const;
+  void captureCodeSnapshot(bool promptForComment);
+  void showCodeSnapshotsGallery();
+  void restoreCodeSnapshot(const QString& snapshotId);
   void wireSignals();
   void rebuildRecentSketchesMenu();
   void rebuildExamplesMenu();

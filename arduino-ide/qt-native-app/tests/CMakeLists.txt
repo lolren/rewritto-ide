@@ -134,6 +134,19 @@ target_link_libraries(arduino-ide-qt-native-test-sketch-build-settings-store PRI
 )
 add_test(NAME qt-native-sketch-build-settings-store COMMAND arduino-ide-qt-native-test-sketch-build-settings-store)
 
+add_executable(arduino-ide-qt-native-test-code-snapshot-store
+  test_code_snapshot_store.cpp
+  ../src/code_snapshot_store.cpp
+)
+target_include_directories(arduino-ide-qt-native-test-code-snapshot-store PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_link_libraries(arduino-ide-qt-native-test-code-snapshot-store PRIVATE
+  Qt6::Core
+  Qt6::Test
+)
+add_test(NAME qt-native-code-snapshot-store COMMAND arduino-ide-qt-native-test-code-snapshot-store)
+
 add_executable(arduino-ide-qt-native-test-sketch-manager
   test_sketch_manager.cpp
   ../src/sketch_manager.cpp

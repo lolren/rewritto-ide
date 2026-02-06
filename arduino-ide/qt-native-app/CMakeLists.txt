@@ -21,14 +21,18 @@ qt_add_executable(rewritto-ide MANUAL_FINALIZATION
   src/boards_manager_dialog.h
   src/board_selector_dialog.cpp
   src/board_selector_dialog.h
-  src/build_output_parser.cpp
-  src/build_output_parser.h
-  src/code_editor.cpp
-  src/code_editor.h
-  src/cpp_highlighter.cpp
-  src/cpp_highlighter.h
-  src/editor_widget.cpp
-  src/editor_widget.h
+	  src/build_output_parser.cpp
+	  src/build_output_parser.h
+	  src/code_editor.cpp
+	  src/code_editor.h
+	  src/code_snapshot_store.cpp
+	  src/code_snapshot_store.h
+	  src/code_snapshots_dialog.cpp
+	  src/code_snapshots_dialog.h
+	  src/cpp_highlighter.cpp
+	  src/cpp_highlighter.h
+	  src/editor_widget.cpp
+	  src/editor_widget.h
   src/examples_dialog.cpp
   src/examples_dialog.h
   src/examples_scanner.cpp

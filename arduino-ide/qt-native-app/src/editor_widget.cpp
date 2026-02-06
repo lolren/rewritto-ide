@@ -117,6 +117,9 @@ EditorWidget::EditorWidget(QWidget* parent) : QWidget(parent) {
   fileChangedTimer_->setInterval(250);
   connect(fileWatcher_, &QFileSystemWatcher::fileChanged, this,
           [this](const QString& path) {
+            if (suppressDiskEvents_) {
+              return;
+            }
             if (path.trimmed().isEmpty()) {
               return;
             }
@@ -247,6 +250,19 @@ EditorWidget::EditorWidget(QWidget* parent) : QWidget(parent) {
   auto* layout = new QHBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
   layout->addWidget(tabs_);
+}
+
+void EditorWidget::setSuppressDiskEvents(bool suppress) {
+  if (suppressDiskEvents_ == suppress) {
+    return;
+  }
+  suppressDiskEvents_ = suppress;
+  if (suppressDiskEvents_) {
+    pendingFileChanges_.clear();
+    if (fileChangedTimer_) {
+      fileChangedTimer_->stop();
+    }
+  }
 }
 
 void EditorWidget::watchFilePath(const QString& filePath) {

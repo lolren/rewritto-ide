@@ -5,6 +5,8 @@
 #include "boards_manager_dialog.h"
 #include "build_output_parser.h"
 #include "code_editor.h"
+#include "code_snapshot_store.h"
+#include "code_snapshots_dialog.h"
 #include "editor_widget.h"
 #include "examples_dialog.h"
 #include "examples_scanner.h"
@@ -62,6 +64,7 @@
 #include <QJsonObject>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLocale>
 #include <QLineEdit>
 #include <QMap>
 #include <QCheckBox>
@@ -76,6 +79,7 @@
 #include <QProcess>
 #include <QPointer>
 #include <QProgressBar>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollBar>
@@ -1982,17 +1986,17 @@ void MainWindow::createLayout() {
   actionContextSnapshotsMode_->setToolTip(tr("Snapshots"));
 
   actionSnapshotCapture_->setIcon(themedModeIcon("camera-photo", QStyle::SP_DialogSaveButton));
-  actionSnapshotCapture_->setToolTip(tr("Capture editor snapshot"));
+  actionSnapshotCapture_->setToolTip(tr("Capture code snapshot"));
   actionSnapshotCompare_->setIcon(themedModeIcon("view-sort-descending", QStyle::SP_FileDialogListView));
   actionSnapshotCompare_->setToolTip(tr("Compare snapshots"));
   actionSnapshotGallery_->setIcon(themedModeIcon("folder-pictures", QStyle::SP_DirIcon));
-  actionSnapshotGallery_->setToolTip(tr("Open snapshot gallery"));
+  actionSnapshotGallery_->setToolTip(tr("Open code snapshots"));
   connect(actionSnapshotCapture_, &QAction::triggered, this,
-          [this] { showToast(tr("Snapshot capture is not implemented yet.")); });
+          [this] { captureCodeSnapshot(false); });
   connect(actionSnapshotCompare_, &QAction::triggered, this,
           [this] { showToast(tr("Snapshot compare is not implemented yet.")); });
   connect(actionSnapshotGallery_, &QAction::triggered, this,
-          [this] { showToast(tr("Snapshot gallery is not implemented yet.")); });
+          [this] { showCodeSnapshotsGallery(); });
 
   contextModeToolBar_->addAction(actionContextBuildMode_);
   contextModeToolBar_->addAction(actionContextFontsMode_);
@@ -6486,6 +6490,336 @@ void MainWindow::rebuildContextToolbar() {
   QWidget* spacer = new QWidget(fontToolBar_);
   spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
   fontToolBar_->addWidget(spacer);
+}
+
+QHash<QString, QByteArray> MainWindow::snapshotFileOverridesForSketch(
+    const QString& sketchFolder) const {
+  QHash<QString, QByteArray> out;
+  if (!editor_ || sketchFolder.trimmed().isEmpty()) {
+    return out;
+  }
+
+  const QString sketchRoot = QDir(sketchFolder).absolutePath();
+  if (sketchRoot.isEmpty()) {
+    return out;
+  }
+  const QString sketchPrefix = sketchRoot + QDir::separator();
+  QDir sketchDir(sketchRoot);
+
+  for (const QString& filePath : editor_->openedFiles()) {
+    const QString absPath = QFileInfo(filePath).absoluteFilePath();
+    if (absPath.isEmpty()) {
+      continue;
+    }
+    if (absPath != sketchRoot && !absPath.startsWith(sketchPrefix)) {
+      continue;
+    }
+
+    QString rel = sketchDir.relativeFilePath(absPath).trimmed();
+    rel.replace('\\', '/');
+    rel = QDir::cleanPath(rel);
+    if (rel.isEmpty() || rel == QStringLiteral(".")) {
+      continue;
+    }
+
+    const QString text = editor_->textForFile(absPath);
+    QByteArray bytes = text.toUtf8();
+
+    // Preserve existing line endings for already-on-disk files.
+    QFile diskFile(absPath);
+    if (diskFile.open(QIODevice::ReadOnly)) {
+      const QByteArray diskBytes = diskFile.readAll();
+      if (diskBytes.contains("\r\n")) {
+        QString crlfText = text;
+        crlfText.replace(QStringLiteral("\n"), QStringLiteral("\r\n"));
+        bytes = crlfText.toUtf8();
+      }
+    }
+
+    out.insert(rel, bytes);
+  }
+  return out;
+}
+
+void MainWindow::captureCodeSnapshot(bool promptForComment) {
+  const QString sketchFolder = currentSketchFolderPath();
+  if (sketchFolder.isEmpty()) {
+    showToast(tr("Open a sketch first."));
+    return;
+  }
+
+  QString comment;
+  if (promptForComment) {
+    bool ok = false;
+    comment = QInputDialog::getMultiLineText(this,
+                                             tr("New Snapshot"),
+                                             tr("Comment (optional):"),
+                                             QString{},
+                                             &ok);
+    if (!ok) {
+      return;
+    }
+  }
+
+  CodeSnapshotStore::CreateOptions options;
+  options.sketchFolder = sketchFolder;
+  options.comment = comment;
+  options.fileOverrides = snapshotFileOverridesForSketch(sketchFolder);
+
+  QProgressDialog progress(tr("Creating snapshot\u2026"), tr("Cancel"), 0, 0, this);
+  progress.setWindowModality(Qt::WindowModal);
+  progress.setMinimumDuration(250);
+  progress.setAutoClose(true);
+  progress.setAutoReset(true);
+
+  auto progressCb = [this, &progress](int done, int total, const QString& rel) -> bool {
+    progress.setMaximum(std::max(0, total));
+    progress.setValue(std::max(0, done));
+    if (!rel.trimmed().isEmpty()) {
+      progress.setLabelText(tr("Creating snapshot\u2026\n%1").arg(rel));
+    } else {
+      progress.setLabelText(tr("Creating snapshot\u2026"));
+    }
+    QCoreApplication::processEvents();
+    return !progress.wasCanceled();
+  };
+
+  QString err;
+  CodeSnapshotStore::SnapshotMeta meta;
+  if (!CodeSnapshotStore::createSnapshot(options, &meta, &err, progressCb)) {
+    showToast(err.isEmpty() ? tr("Snapshot failed.") : err);
+    return;
+  }
+
+  if (!promptForComment && meta.comment.trimmed().isEmpty()) {
+    showToastWithAction(
+        tr("Snapshot created."),
+        tr("Add Comment\u2026"),
+        [this, sketchFolder, snapshotId = meta.id] {
+          bool ok = false;
+          const QString comment = QInputDialog::getMultiLineText(
+              this, tr("Snapshot Comment"), tr("Comment:"), QString{}, &ok);
+          if (!ok) {
+            return;
+          }
+          QString err;
+          if (!CodeSnapshotStore::updateSnapshotComment(sketchFolder, snapshotId, comment, &err)) {
+            showToast(err.isEmpty() ? tr("Failed to update comment.") : err);
+          }
+        },
+        6500);
+  } else {
+    showToast(tr("Snapshot created."));
+  }
+}
+
+void MainWindow::showCodeSnapshotsGallery() {
+  const QString sketchFolder = currentSketchFolderPath();
+  if (sketchFolder.isEmpty()) {
+    showToast(tr("Open a sketch first."));
+    return;
+  }
+
+  CodeSnapshotsDialog dialog(sketchFolder, this);
+  connect(&dialog, &CodeSnapshotsDialog::captureRequested, this, [this, &dialog] {
+    captureCodeSnapshot(true);
+    dialog.reload();
+  });
+  connect(&dialog, &CodeSnapshotsDialog::restoreRequested, this,
+          [this, &dialog](const QString& id) {
+            restoreCodeSnapshot(id);
+            dialog.reload();
+          });
+  connect(&dialog, &CodeSnapshotsDialog::editCommentRequested, this,
+          [this, &dialog, sketchFolder](const QString& id, const QString& currentComment) {
+            bool ok = false;
+            const QString nextComment =
+                QInputDialog::getMultiLineText(this,
+                                               tr("Edit Comment"),
+                                               tr("Comment:"),
+                                               currentComment,
+                                               &ok);
+            if (!ok) {
+              return;
+            }
+            QString err;
+            if (!CodeSnapshotStore::updateSnapshotComment(sketchFolder, id, nextComment, &err)) {
+              showToast(err.isEmpty() ? tr("Failed to update comment.") : err);
+              return;
+            }
+            dialog.reload();
+          });
+  connect(&dialog, &CodeSnapshotsDialog::deleteRequested, this,
+          [this, &dialog, sketchFolder](const QString& id) {
+            QMessageBox box(this);
+            box.setIcon(QMessageBox::Warning);
+            box.setWindowTitle(tr("Delete Snapshot"));
+            box.setText(tr("Delete snapshot '%1'?").arg(id));
+            box.setInformativeText(tr("This cannot be undone."));
+            QPushButton* deleteBtn = box.addButton(tr("Delete"), QMessageBox::AcceptRole);
+            box.addButton(QMessageBox::Cancel);
+            box.setDefaultButton(QMessageBox::Cancel);
+            box.exec();
+            if (box.clickedButton() != static_cast<QAbstractButton*>(deleteBtn)) {
+              return;
+            }
+            QString err;
+            if (!CodeSnapshotStore::deleteSnapshot(sketchFolder, id, &err)) {
+              showToast(err.isEmpty() ? tr("Failed to delete snapshot.") : err);
+              return;
+            }
+            dialog.reload();
+          });
+
+  dialog.exec();
+}
+
+void MainWindow::restoreCodeSnapshot(const QString& snapshotId) {
+  const QString sketchFolder = currentSketchFolderPath();
+  if (sketchFolder.isEmpty()) {
+    showToast(tr("Open a sketch first."));
+    return;
+  }
+  if (snapshotId.trimmed().isEmpty()) {
+    return;
+  }
+
+  QString err;
+  const auto snapshot = CodeSnapshotStore::readSnapshot(sketchFolder, snapshotId, &err);
+  if (!snapshot) {
+    showToast(err.isEmpty() ? tr("Snapshot could not be read.") : err);
+    return;
+  }
+
+  QMessageBox box(this);
+  box.setIcon(QMessageBox::Warning);
+  box.setWindowTitle(tr("Restore Snapshot"));
+  const QString when =
+      QLocale().toString(snapshot->meta.createdAtUtc.toLocalTime(), QLocale::ShortFormat);
+  box.setText(tr("Restore snapshot from %1?").arg(when));
+
+  QString info;
+  const QString comment = snapshot->meta.comment.trimmed();
+  if (!comment.isEmpty()) {
+    info += tr("Comment: %1").arg(comment) + QStringLiteral("\n\n");
+  }
+  info += tr("This will overwrite %1 files in the sketch folder.")
+              .arg(snapshot->meta.fileCount);
+  if (editor_ && editor_->hasUnsavedChanges()) {
+    info += tr("\n\nYou have unsaved changes in the editor. A safety snapshot will be created first, but your current unsaved changes will be discarded after restore.");
+  } else {
+    info += tr("\n\nA safety snapshot will be created first.");
+  }
+  box.setInformativeText(info);
+
+  QPushButton* restoreBtn = box.addButton(tr("Restore"), QMessageBox::AcceptRole);
+  box.addButton(QMessageBox::Cancel);
+  box.setDefaultButton(QMessageBox::Cancel);
+  box.exec();
+  if (box.clickedButton() != static_cast<QAbstractButton*>(restoreBtn)) {
+    return;
+  }
+
+  CodeSnapshotStore::CreateOptions backupOptions;
+  backupOptions.sketchFolder = sketchFolder;
+  backupOptions.comment = tr("Auto-backup before restoring %1").arg(snapshotId);
+  backupOptions.fileOverrides = snapshotFileOverridesForSketch(sketchFolder);
+
+  CodeSnapshotStore::SnapshotMeta backupMeta;
+  {
+    QProgressDialog progress(tr("Creating safety snapshot\u2026"), tr("Cancel"), 0, 0, this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(250);
+    progress.setAutoClose(true);
+    progress.setAutoReset(true);
+    auto progressCb = [this, &progress](int done, int total, const QString& rel) -> bool {
+      progress.setMaximum(std::max(0, total));
+      progress.setValue(std::max(0, done));
+      if (!rel.trimmed().isEmpty()) {
+        progress.setLabelText(tr("Creating safety snapshot\u2026\n%1").arg(rel));
+      } else {
+        progress.setLabelText(tr("Creating safety snapshot\u2026"));
+      }
+      QCoreApplication::processEvents();
+      return !progress.wasCanceled();
+    };
+
+    if (!CodeSnapshotStore::createSnapshot(backupOptions, &backupMeta, &err, progressCb)) {
+      showToast(err.isEmpty() ? tr("Restore aborted.") : err);
+      return;
+    }
+  }
+
+  struct DiskEventSuppressionGuard final {
+    EditorWidget* editor = nullptr;
+    explicit DiskEventSuppressionGuard(EditorWidget* editor) : editor(editor) {
+      if (editor) {
+        editor->setSuppressDiskEvents(true);
+      }
+    }
+    ~DiskEventSuppressionGuard() {
+      if (editor) {
+        editor->setSuppressDiskEvents(false);
+      }
+    }
+  };
+  DiskEventSuppressionGuard suppressGuard(editor_);
+
+  QStringList writtenFiles;
+  {
+    QProgressDialog progress(tr("Restoring snapshot\u2026"), QString{}, 0, 0, this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(250);
+    progress.setAutoClose(true);
+    progress.setAutoReset(true);
+    auto progressCb = [this, &progress](int done, int total, const QString& rel) -> bool {
+      progress.setMaximum(std::max(0, total));
+      progress.setValue(std::max(0, done));
+      if (!rel.trimmed().isEmpty()) {
+        progress.setLabelText(tr("Restoring snapshot\u2026\n%1").arg(rel));
+      } else {
+        progress.setLabelText(tr("Restoring snapshot\u2026"));
+      }
+      QCoreApplication::processEvents();
+      return true;
+    };
+
+    if (!CodeSnapshotStore::restoreSnapshot(sketchFolder, snapshotId, &writtenFiles, &err, progressCb)) {
+      showToast(err.isEmpty() ? tr("Restore failed.") : err);
+      return;
+    }
+  }
+
+  if (editor_ && !writtenFiles.isEmpty()) {
+    QSet<QString> writtenSet;
+    writtenSet.reserve(writtenFiles.size());
+    for (const QString& p : writtenFiles) {
+      writtenSet.insert(QFileInfo(p).absoluteFilePath());
+    }
+    for (const QString& openPath : editor_->openedFiles()) {
+      const QString abs = QFileInfo(openPath).absoluteFilePath();
+      if (!writtenSet.contains(abs)) {
+        continue;
+      }
+      if (auto* w = editor_->editorWidgetForFile(abs)) {
+        if (w->document()) {
+          w->document()->setModified(false);
+        }
+      }
+      (void)editor_->reloadFileIfUnmodified(abs);
+    }
+  }
+
+  if (!lastSuccessfulCompile_.sketchFolder.trimmed().isEmpty() &&
+      QDir(lastSuccessfulCompile_.sketchFolder).absolutePath() == QDir(sketchFolder).absolutePath()) {
+    const QString currentSignature = computeSketchSignature(sketchFolder);
+    lastSuccessfulCompile_.sketchChangedSinceCompile =
+        currentSignature.isEmpty() ||
+        currentSignature != lastSuccessfulCompile_.sketchSignature;
+  }
+  updateUploadActionStates();
+
+  showToast(tr("Snapshot restored. Safety snapshot: %1").arg(backupMeta.id), 7000);
 }
 
 void MainWindow::updateFontFromToolbar() {
