@@ -198,6 +198,111 @@ bool shouldIgnoreSnapshotComparePath(const QString& relPath) {
   return false;
 }
 
+struct CommandResult final {
+  bool started = false;
+  bool timedOut = false;
+  int exitCode = -1;
+  QProcess::ExitStatus exitStatus = QProcess::NormalExit;
+  QString stdoutText;
+  QString stderrText;
+};
+
+CommandResult runCommandBlocking(const QString& program,
+                                 const QStringList& args,
+                                 const QString& workingDirectory = {},
+                                 const QByteArray& stdinPayload = {},
+                                 int timeoutMs = 120000) {
+  CommandResult result;
+  if (program.trimmed().isEmpty()) {
+    return result;
+  }
+
+  QProcess process;
+  if (!workingDirectory.trimmed().isEmpty()) {
+    process.setWorkingDirectory(workingDirectory);
+  }
+  process.start(program, args);
+  if (!process.waitForStarted(5000)) {
+    result.stderrText = QObject::tr("Failed to start '%1'.").arg(program);
+    return result;
+  }
+
+  result.started = true;
+  if (!stdinPayload.isEmpty()) {
+    process.write(stdinPayload);
+  }
+  process.closeWriteChannel();
+
+  if (!process.waitForFinished(timeoutMs)) {
+    result.timedOut = true;
+    process.kill();
+    process.waitForFinished(1000);
+  }
+
+  result.exitStatus = process.exitStatus();
+  result.exitCode = process.exitCode();
+  result.stdoutText = QString::fromUtf8(process.readAllStandardOutput());
+  result.stderrText = QString::fromUtf8(process.readAllStandardError());
+  return result;
+}
+
+QString commandErrorSummary(const CommandResult& result) {
+  if (!result.started) {
+    return QObject::tr("Process could not be started.");
+  }
+  if (result.timedOut) {
+    return QObject::tr("Process timed out.");
+  }
+  if (result.exitStatus != QProcess::NormalExit) {
+    return QObject::tr("Process crashed.");
+  }
+  const QString stderr = result.stderrText.trimmed();
+  const QString stdout = result.stdoutText.trimmed();
+  if (!stderr.isEmpty()) {
+    return stderr;
+  }
+  if (!stdout.isEmpty()) {
+    return stdout;
+  }
+  return QObject::tr("Command failed (exit code %1).").arg(result.exitCode);
+}
+
+bool isGitRepository(const QString& gitPath, const QString& workingDirectory) {
+  const CommandResult result = runCommandBlocking(
+      gitPath, {QStringLiteral("rev-parse"), QStringLiteral("--is-inside-work-tree")},
+      workingDirectory, {}, 10000);
+  return result.started && !result.timedOut &&
+         result.exitStatus == QProcess::NormalExit &&
+         result.exitCode == 0 &&
+         result.stdoutText.trimmed() == QStringLiteral("true");
+}
+
+QString githubBrowseUrlForRemote(QString remoteUrl) {
+  remoteUrl = remoteUrl.trimmed();
+  if (remoteUrl.isEmpty()) {
+    return {};
+  }
+
+  if (remoteUrl.startsWith(QStringLiteral("git@github.com:"))) {
+    remoteUrl.replace(QStringLiteral("git@github.com:"), QStringLiteral("https://github.com/"));
+  }
+  if (remoteUrl.startsWith(QStringLiteral("ssh://git@github.com/"))) {
+    remoteUrl.replace(QStringLiteral("ssh://git@github.com/"), QStringLiteral("https://github.com/"));
+  }
+  if (!remoteUrl.startsWith(QStringLiteral("https://github.com/")) &&
+      !remoteUrl.startsWith(QStringLiteral("http://github.com/"))) {
+    return {};
+  }
+
+  if (remoteUrl.endsWith(QStringLiteral(".git"), Qt::CaseInsensitive)) {
+    remoteUrl.chop(4);
+  }
+  while (remoteUrl.endsWith(QLatin1Char('/'))) {
+    remoteUrl.chop(1);
+  }
+  return remoteUrl;
+}
+
 bool sendLinuxDesktopNotification(const QString& summary,
                                   const QString& body,
                                   int timeoutMs) {
@@ -1164,10 +1269,16 @@ void MainWindow::createActions() {
   actionContextFontsMode_->setCheckable(true);
   actionContextSnapshotsMode_ = new QAction(tr("Snapshots"), this);
   actionContextSnapshotsMode_->setCheckable(true);
+  actionContextGithubMode_ = new QAction(tr("GitHub"), this);
+  actionContextGithubMode_->setCheckable(true);
 
   actionSnapshotCapture_ = new QAction(tr("Capture"), this);
   actionSnapshotCompare_ = new QAction(tr("Compare"), this);
   actionSnapshotGallery_ = new QAction(tr("Gallery"), this);
+  actionGithubLogin_ = new QAction(tr("Login"), this);
+  actionGitInitRepo_ = new QAction(tr("Init Repo"), this);
+  actionGitCommit_ = new QAction(tr("Commit"), this);
+  actionGitPush_ = new QAction(tr("Push"), this);
 
   actionSerialMonitor_ = new QAction(tr("Serial Monitor"), this);
   actionSerialMonitor_->setCheckable(true);
@@ -2117,6 +2228,8 @@ void MainWindow::createLayout() {
   actionContextFontsMode_->setToolTip(tr("Font Controls"));
   actionContextSnapshotsMode_->setIcon(themedModeIcon("camera-photo", QStyle::SP_DialogSaveButton));
   actionContextSnapshotsMode_->setToolTip(tr("Snapshots"));
+  actionContextGithubMode_->setIcon(themedModeIcon("github", QStyle::SP_DriveNetIcon));
+  actionContextGithubMode_->setToolTip(tr("GitHub"));
 
   actionSnapshotCapture_->setIcon(themedModeIcon("camera-photo", QStyle::SP_DialogSaveButton));
   actionSnapshotCapture_->setToolTip(tr("Capture code snapshot"));
@@ -2124,21 +2237,41 @@ void MainWindow::createLayout() {
   actionSnapshotCompare_->setToolTip(tr("Compare snapshots"));
   actionSnapshotGallery_->setIcon(themedModeIcon("folder-pictures", QStyle::SP_DirIcon));
   actionSnapshotGallery_->setToolTip(tr("Open code snapshots"));
+  actionGithubLogin_->setIcon(themedModeIcon("dialog-password", QStyle::SP_DialogYesButton));
+  actionGithubLogin_->setToolTip(tr("Authenticate with GitHub"));
+  actionGitInitRepo_->setIcon(themedModeIcon("document-new", QStyle::SP_FileDialogNewFolder));
+  actionGitInitRepo_->setToolTip(tr("Initialize a local Git repository"));
+  actionGitCommit_->setIcon(themedModeIcon("document-save", QStyle::SP_DialogSaveButton));
+  actionGitCommit_->setToolTip(tr("Create a commit for current sketch changes"));
+  actionGitPush_->setIcon(themedModeIcon("go-up", QStyle::SP_ArrowUp));
+  actionGitPush_->setToolTip(tr("Push current sketch repository to GitHub"));
   connect(actionSnapshotCapture_, &QAction::triggered, this,
           [this] { captureCodeSnapshot(false); });
   connect(actionSnapshotCompare_, &QAction::triggered, this,
           [this] { showCodeSnapshotCompare(); });
   connect(actionSnapshotGallery_, &QAction::triggered, this,
           [this] { showCodeSnapshotsGallery(); });
+  connect(actionGithubLogin_, &QAction::triggered, this,
+          &MainWindow::loginToGithub);
+  connect(actionGitInitRepo_, &QAction::triggered, this,
+          &MainWindow::initGitRepositoryForCurrentSketch);
+  connect(actionGitCommit_, &QAction::triggered, this,
+          &MainWindow::commitCurrentSketchToGit);
+  connect(actionGitPush_, &QAction::triggered, this,
+          &MainWindow::pushCurrentSketchToRemote);
 
   contextModeToolBar_->addAction(actionContextFontsMode_);
   contextModeToolBar_->addAction(actionContextSnapshotsMode_);
+  contextModeToolBar_->addAction(actionContextGithubMode_);
 
   if (QWidget* widget = contextModeToolBar_->widgetForAction(actionContextFontsMode_)) {
     widget->setObjectName("ContextModeFontsButton");
   }
   if (QWidget* widget = contextModeToolBar_->widgetForAction(actionContextSnapshotsMode_)) {
     widget->setObjectName("ContextModeSnapshotsButton");
+  }
+  if (QWidget* widget = contextModeToolBar_->widgetForAction(actionContextGithubMode_)) {
+    widget->setObjectName("ContextModeGithubButton");
   }
 
   restyleContextModeToolBar();
@@ -2147,12 +2280,15 @@ void MainWindow::createLayout() {
   contextModeGroup_->setExclusive(true);
   contextModeGroup_->addAction(actionContextFontsMode_);
   contextModeGroup_->addAction(actionContextSnapshotsMode_);
+  contextModeGroup_->addAction(actionContextGithubMode_);
   connect(contextModeGroup_, &QActionGroup::triggered, this,
           [this](QAction* action) {
             if (action == actionContextFontsMode_) {
               setContextToolbarMode(ContextToolbarMode::Fonts);
             } else if (action == actionContextSnapshotsMode_) {
               setContextToolbarMode(ContextToolbarMode::Snapshots);
+            } else if (action == actionContextGithubMode_) {
+              setContextToolbarMode(ContextToolbarMode::Github);
             }
             if (actionToggleFontToolBar_ && !actionToggleFontToolBar_->isChecked()) {
               actionToggleFontToolBar_->setChecked(true);
@@ -4800,6 +4936,10 @@ QString MainWindow::toFileUri(const QString& filePath) {
   return QUrl::fromLocalFile(filePath).toString();
 }
 
+QString MainWindow::findExecutable(const QString& name) {
+  return QStandardPaths::findExecutable(name.trimmed());
+}
+
 void MainWindow::showExamplesDialog(QString initialFilter) {
   if (!arduinoCli_) {
     return;
@@ -5885,6 +6025,394 @@ void MainWindow::burnBootloader() {
   }
 }
 
+void MainWindow::loginToGithub() {
+  const QString ghPath = findExecutable(QStringLiteral("gh"));
+  if (ghPath.isEmpty()) {
+    QMessageBox::information(
+        this,
+        tr("GitHub CLI Not Found"),
+        tr("Install GitHub CLI (`gh`) to log in from Rewritto IDE.\n\n"
+           "Ubuntu/Debian: sudo apt install gh\n\n"
+           "After installing, use the Login action again."));
+    return;
+  }
+
+  const CommandResult authStatus = runCommandBlocking(
+      ghPath,
+      {QStringLiteral("auth"), QStringLiteral("status"), QStringLiteral("-h"),
+       QStringLiteral("github.com")},
+      {}, {}, 15000);
+  if (authStatus.started && !authStatus.timedOut &&
+      authStatus.exitStatus == QProcess::NormalExit &&
+      authStatus.exitCode == 0) {
+    showToast(tr("GitHub already authenticated."));
+    return;
+  }
+
+  bool ok = false;
+  const QString token = QInputDialog::getText(
+      this,
+      tr("GitHub Login"),
+      tr("Paste a GitHub personal access token (scope: repo):"),
+      QLineEdit::Password,
+      QString{},
+      &ok).trimmed();
+  if (!ok) {
+    return;
+  }
+  if (token.isEmpty()) {
+    showToast(tr("Login cancelled."));
+    return;
+  }
+
+  const CommandResult loginResult = runCommandBlocking(
+      ghPath,
+      {QStringLiteral("auth"), QStringLiteral("login"),
+       QStringLiteral("--hostname"), QStringLiteral("github.com"),
+       QStringLiteral("--git-protocol"), QStringLiteral("https"),
+       QStringLiteral("--with-token")},
+      {}, token.toUtf8() + '\n', 60000);
+
+  if (loginResult.started && !loginResult.timedOut &&
+      loginResult.exitStatus == QProcess::NormalExit &&
+      loginResult.exitCode == 0) {
+    runCommandBlocking(
+        ghPath,
+        {QStringLiteral("auth"), QStringLiteral("setup-git")},
+        {}, {}, 20000);
+    showToast(tr("GitHub login successful."));
+    return;
+  }
+
+  QMessageBox::warning(
+      this,
+      tr("GitHub Login Failed"),
+      tr("Login failed.\n\n%1\n\n"
+         "Generate a token at https://github.com/settings/tokens")
+          .arg(commandErrorSummary(loginResult)));
+}
+
+void MainWindow::initGitRepositoryForCurrentSketch() {
+  const QString sketchFolder = currentSketchFolderPath().trimmed();
+  if (sketchFolder.isEmpty()) {
+    showToast(tr("Open a sketch first."));
+    return;
+  }
+  if (!QDir(sketchFolder).exists()) {
+    showToast(tr("Sketch folder is not available."));
+    return;
+  }
+
+  const QString gitPath = findExecutable(QStringLiteral("git"));
+  if (gitPath.isEmpty()) {
+    QMessageBox::information(
+        this,
+        tr("Git Not Found"),
+        tr("Install Git to use repository actions.\n\nUbuntu/Debian: sudo apt install git"));
+    return;
+  }
+
+  if (isGitRepository(gitPath, sketchFolder)) {
+    showToast(tr("Git repository already initialized."));
+    return;
+  }
+
+  CommandResult initResult = runCommandBlocking(
+      gitPath,
+      {QStringLiteral("init"), QStringLiteral("-b"), QStringLiteral("main")},
+      sketchFolder, {}, 20000);
+  if (!(initResult.started && !initResult.timedOut &&
+        initResult.exitStatus == QProcess::NormalExit &&
+        initResult.exitCode == 0)) {
+    initResult = runCommandBlocking(
+        gitPath, {QStringLiteral("init")}, sketchFolder, {}, 20000);
+    if (!(initResult.started && !initResult.timedOut &&
+          initResult.exitStatus == QProcess::NormalExit &&
+          initResult.exitCode == 0)) {
+      QMessageBox::warning(
+          this,
+          tr("Git Init Failed"),
+          tr("Could not initialize the repository.\n\n%1")
+              .arg(commandErrorSummary(initResult)));
+      return;
+    }
+    runCommandBlocking(
+        gitPath,
+        {QStringLiteral("branch"), QStringLiteral("-M"), QStringLiteral("main")},
+        sketchFolder, {}, 10000);
+  }
+
+  if (output_) {
+    const QString details = initResult.stdoutText.trimmed();
+    if (!details.isEmpty()) {
+      output_->appendLine(details);
+    }
+  }
+  showToast(tr("Git repository initialized."));
+}
+
+void MainWindow::commitCurrentSketchToGit() {
+  const QString sketchFolder = currentSketchFolderPath().trimmed();
+  if (sketchFolder.isEmpty()) {
+    showToast(tr("Open a sketch first."));
+    return;
+  }
+  if (!QDir(sketchFolder).exists()) {
+    showToast(tr("Sketch folder is not available."));
+    return;
+  }
+
+  const QString gitPath = findExecutable(QStringLiteral("git"));
+  if (gitPath.isEmpty()) {
+    QMessageBox::information(
+        this,
+        tr("Git Not Found"),
+        tr("Install Git to use repository actions.\n\nUbuntu/Debian: sudo apt install git"));
+    return;
+  }
+
+  if (!isGitRepository(gitPath, sketchFolder)) {
+    const auto reply = QMessageBox::question(
+        this,
+        tr("Initialize Repository"),
+        tr("This sketch is not a Git repository yet. Initialize it now?"),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::Yes);
+    if (reply != QMessageBox::Yes) {
+      return;
+    }
+    initGitRepositoryForCurrentSketch();
+    if (!isGitRepository(gitPath, sketchFolder)) {
+      return;
+    }
+  }
+
+  const CommandResult addResult = runCommandBlocking(
+      gitPath, {QStringLiteral("add"), QStringLiteral("-A")}, sketchFolder, {}, 30000);
+  if (!(addResult.started && !addResult.timedOut &&
+        addResult.exitStatus == QProcess::NormalExit &&
+        addResult.exitCode == 0)) {
+    QMessageBox::warning(
+        this,
+        tr("Git Commit Failed"),
+        tr("Staging changes failed.\n\n%1")
+            .arg(commandErrorSummary(addResult)));
+    return;
+  }
+
+  const CommandResult stagedResult = runCommandBlocking(
+      gitPath,
+      {QStringLiteral("diff"), QStringLiteral("--cached"), QStringLiteral("--name-only")},
+      sketchFolder, {}, 20000);
+  if (!(stagedResult.started && !stagedResult.timedOut &&
+        stagedResult.exitStatus == QProcess::NormalExit &&
+        stagedResult.exitCode == 0)) {
+    QMessageBox::warning(
+        this,
+        tr("Git Commit Failed"),
+        tr("Could not inspect staged changes.\n\n%1")
+            .arg(commandErrorSummary(stagedResult)));
+    return;
+  }
+  if (stagedResult.stdoutText.trimmed().isEmpty()) {
+    showToast(tr("No changes to commit."));
+    return;
+  }
+
+  bool ok = false;
+  const QString defaultMessage = tr("Update sketch (%1)")
+                                     .arg(QDateTime::currentDateTime().toString(Qt::ISODate));
+  const QString commitMessage = QInputDialog::getText(
+      this,
+      tr("Commit Message"),
+      tr("Commit message:"),
+      QLineEdit::Normal,
+      defaultMessage,
+      &ok).trimmed();
+  if (!ok || commitMessage.isEmpty()) {
+    return;
+  }
+
+  const CommandResult commitResult = runCommandBlocking(
+      gitPath, {QStringLiteral("commit"), QStringLiteral("-m"), commitMessage},
+      sketchFolder, {}, 40000);
+  if (!(commitResult.started && !commitResult.timedOut &&
+        commitResult.exitStatus == QProcess::NormalExit &&
+        commitResult.exitCode == 0)) {
+    QString error = commandErrorSummary(commitResult);
+    if (error.contains(QStringLiteral("Please tell me who you are"), Qt::CaseInsensitive) ||
+        error.contains(QStringLiteral("unable to auto-detect email address"), Qt::CaseInsensitive)) {
+      error += tr("\n\nSet your identity first:\n"
+                  "git config --global user.name \"Your Name\"\n"
+                  "git config --global user.email \"you@example.com\"");
+    }
+    QMessageBox::warning(
+        this,
+        tr("Git Commit Failed"),
+        tr("Commit failed.\n\n%1").arg(error));
+    return;
+  }
+
+  if (output_) {
+    const QString details = commitResult.stdoutText.trimmed();
+    if (!details.isEmpty()) {
+      output_->appendLine(details);
+    }
+  }
+  showToast(tr("Commit created."));
+}
+
+void MainWindow::pushCurrentSketchToRemote() {
+  const QString sketchFolder = currentSketchFolderPath().trimmed();
+  if (sketchFolder.isEmpty()) {
+    showToast(tr("Open a sketch first."));
+    return;
+  }
+  if (!QDir(sketchFolder).exists()) {
+    showToast(tr("Sketch folder is not available."));
+    return;
+  }
+
+  const QString gitPath = findExecutable(QStringLiteral("git"));
+  if (gitPath.isEmpty()) {
+    QMessageBox::information(
+        this,
+        tr("Git Not Found"),
+        tr("Install Git to use repository actions.\n\nUbuntu/Debian: sudo apt install git"));
+    return;
+  }
+
+  if (!isGitRepository(gitPath, sketchFolder)) {
+    const auto reply = QMessageBox::question(
+        this,
+        tr("Initialize Repository"),
+        tr("This sketch is not a Git repository yet. Initialize it now?"),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::Yes);
+    if (reply != QMessageBox::Yes) {
+      return;
+    }
+    initGitRepositoryForCurrentSketch();
+    if (!isGitRepository(gitPath, sketchFolder)) {
+      return;
+    }
+  }
+
+  CommandResult headResult = runCommandBlocking(
+      gitPath,
+      {QStringLiteral("rev-parse"), QStringLiteral("--verify"), QStringLiteral("HEAD")},
+      sketchFolder, {}, 10000);
+  if (!(headResult.started && !headResult.timedOut &&
+        headResult.exitStatus == QProcess::NormalExit &&
+        headResult.exitCode == 0)) {
+    const auto reply = QMessageBox::question(
+        this,
+        tr("No Commits Yet"),
+        tr("This repository has no commits yet. Create a commit now?"),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::Yes);
+    if (reply != QMessageBox::Yes) {
+      return;
+    }
+    commitCurrentSketchToGit();
+    headResult = runCommandBlocking(
+        gitPath,
+        {QStringLiteral("rev-parse"), QStringLiteral("--verify"), QStringLiteral("HEAD")},
+        sketchFolder, {}, 10000);
+    if (!(headResult.started && !headResult.timedOut &&
+          headResult.exitStatus == QProcess::NormalExit &&
+          headResult.exitCode == 0)) {
+      return;
+    }
+  }
+
+  CommandResult remoteResult = runCommandBlocking(
+      gitPath,
+      {QStringLiteral("remote"), QStringLiteral("get-url"), QStringLiteral("origin")},
+      sketchFolder, {}, 10000);
+  QString remoteUrl = remoteResult.stdoutText.trimmed();
+  if (!(remoteResult.started && !remoteResult.timedOut &&
+        remoteResult.exitStatus == QProcess::NormalExit &&
+        remoteResult.exitCode == 0) ||
+      remoteUrl.isEmpty()) {
+    bool ok = false;
+    const QString defaultUrl = tr("https://github.com/<username>/%1.git")
+                                   .arg(QFileInfo(sketchFolder).fileName());
+    const QString userUrl = QInputDialog::getText(
+        this,
+        tr("GitHub Remote URL"),
+        tr("Enter the GitHub repository URL for `origin`:"),
+        QLineEdit::Normal,
+        defaultUrl,
+        &ok).trimmed();
+    if (!ok || userUrl.isEmpty()) {
+      return;
+    }
+
+    const CommandResult addRemoteResult = runCommandBlocking(
+        gitPath,
+        {QStringLiteral("remote"), QStringLiteral("add"), QStringLiteral("origin"), userUrl},
+        sketchFolder, {}, 10000);
+    if (!(addRemoteResult.started && !addRemoteResult.timedOut &&
+          addRemoteResult.exitStatus == QProcess::NormalExit &&
+          addRemoteResult.exitCode == 0)) {
+      QMessageBox::warning(
+          this,
+          tr("Remote Setup Failed"),
+          tr("Could not add remote `origin`.\n\n%1")
+              .arg(commandErrorSummary(addRemoteResult)));
+      return;
+    }
+    remoteUrl = userUrl;
+  }
+
+  CommandResult branchResult = runCommandBlocking(
+      gitPath, {QStringLiteral("branch"), QStringLiteral("--show-current")},
+      sketchFolder, {}, 10000);
+  QString branch = branchResult.stdoutText.trimmed();
+  if (branch.isEmpty()) {
+    branch = QStringLiteral("main");
+    runCommandBlocking(
+        gitPath,
+        {QStringLiteral("branch"), QStringLiteral("-M"), branch},
+        sketchFolder, {}, 10000);
+  }
+
+  const CommandResult pushResult = runCommandBlocking(
+      gitPath,
+      {QStringLiteral("push"), QStringLiteral("-u"), QStringLiteral("origin"), branch},
+      sketchFolder, {}, 120000);
+  if (!(pushResult.started && !pushResult.timedOut &&
+        pushResult.exitStatus == QProcess::NormalExit &&
+        pushResult.exitCode == 0)) {
+    const QString details = commandErrorSummary(pushResult);
+    QMessageBox::warning(
+        this,
+        tr("Push Failed"),
+        tr("Could not push to GitHub.\n\n%1\n\n"
+           "If this is an authentication issue, use the GitHub Login action first.")
+            .arg(details));
+    return;
+  }
+
+  if (output_) {
+    const QString details = pushResult.stdoutText.trimmed();
+    if (!details.isEmpty()) {
+      output_->appendLine(details);
+    }
+  }
+
+  const QString repoUrl = githubBrowseUrlForRemote(remoteUrl);
+  if (!repoUrl.isEmpty()) {
+    showToastWithAction(
+        tr("Push completed."),
+        tr("Open Repo"),
+        [repoUrl] { QDesktopServices::openUrl(QUrl(repoUrl)); });
+  } else {
+    showToast(tr("Push completed."));
+  }
+}
+
 // === Help Menu Actions ===
 void MainWindow::showAbout() {
   const QString appVersion =
@@ -6322,6 +6850,7 @@ void MainWindow::restyleContextModeToolBar() {
 
   const QColor fontsAccent = QColor(QStringLiteral("#38bdf8"));
   const QColor snapshotsAccent = QColor(QStringLiteral("#22c55e"));
+  const QColor githubAccent = QColor(QStringLiteral("#6366f1"));
 
   const QColor barBackground = blendColors(
       panelColor, pal.color(QPalette::Base), darkTheme ? 0.22 : 0.06);
@@ -6333,6 +6862,8 @@ void MainWindow::restyleContextModeToolBar() {
       blendColors(barBackground, fontsAccent, darkTheme ? 0.55 : 0.34);
   const QColor snapshotsChecked =
       blendColors(barBackground, snapshotsAccent, darkTheme ? 0.55 : 0.34);
+  const QColor githubChecked =
+      blendColors(barBackground, githubAccent, darkTheme ? 0.55 : 0.34);
   const QColor checkedText = readableForeground(fontsChecked);
 
   contextModeToolBar_->setStyleSheet(QString(
@@ -6361,17 +6892,25 @@ void MainWindow::restyleContextModeToolBar() {
       "QToolBar#ContextModeBar QToolButton#ContextModeSnapshotsButton {"
       "  border-right: 3px solid %6;"
       "}"
+      "QToolBar#ContextModeBar QToolButton#ContextModeGithubButton {"
+      "  border-right: 3px solid %7;"
+      "}"
       "QToolBar#ContextModeBar QToolButton#ContextModeFontsButton:checked {"
-      "  background-color: %7;"
-      "  color: %9;"
+      "  background-color: %8;"
+      "  color: %11;"
       "}"
       "QToolBar#ContextModeBar QToolButton#ContextModeSnapshotsButton:checked {"
-      "  background-color: %8;"
-      "  color: %9;"
+      "  background-color: %9;"
+      "  color: %11;"
+      "}"
+      "QToolBar#ContextModeBar QToolButton#ContextModeGithubButton:checked {"
+      "  background-color: %10;"
+      "  color: %11;"
       "}")
       .arg(colorHex(barBackground), colorHex(barBorder), colorHex(textColor),
            colorHex(hoverBackground), colorHex(fontsAccent), colorHex(snapshotsAccent),
-           colorHex(fontsChecked), colorHex(snapshotsChecked), colorHex(checkedText)));
+           colorHex(githubAccent), colorHex(fontsChecked), colorHex(snapshotsChecked),
+           colorHex(githubChecked), colorHex(checkedText)));
 }
 
 void MainWindow::syncContextModeSelection(bool contextVisible) {
@@ -6384,13 +6923,15 @@ void MainWindow::syncContextModeSelection(bool contextVisible) {
     contextModeGroup_->setExclusive(false);
     if (actionContextFontsMode_) actionContextFontsMode_->setChecked(false);
     if (actionContextSnapshotsMode_) actionContextSnapshotsMode_->setChecked(false);
+    if (actionContextGithubMode_) actionContextGithubMode_->setChecked(false);
     contextModeGroup_->setExclusive(wasExclusive);
     return;
   }
 
   const bool hasCheckedAction =
       (actionContextFontsMode_ && actionContextFontsMode_->isChecked()) ||
-      (actionContextSnapshotsMode_ && actionContextSnapshotsMode_->isChecked());
+      (actionContextSnapshotsMode_ && actionContextSnapshotsMode_->isChecked()) ||
+      (actionContextGithubMode_ && actionContextGithubMode_->isChecked());
   if (hasCheckedAction) {
     return;
   }
@@ -6402,6 +6943,9 @@ void MainWindow::syncContextModeSelection(bool contextVisible) {
       break;
     case ContextToolbarMode::Snapshots:
       modeAction = actionContextSnapshotsMode_;
+      break;
+    case ContextToolbarMode::Github:
+      modeAction = actionContextGithubMode_;
       break;
   }
   if (modeAction) {
@@ -6451,6 +6995,10 @@ void MainWindow::rebuildContextToolbar() {
     const QSignalBlocker blocker(actionContextSnapshotsMode_);
     actionContextSnapshotsMode_->setChecked(contextToolbarMode_ == ContextToolbarMode::Snapshots);
   }
+  if (actionContextGithubMode_) {
+    const QSignalBlocker blocker(actionContextGithubMode_);
+    actionContextGithubMode_->setChecked(contextToolbarMode_ == ContextToolbarMode::Github);
+  }
 
   fontFamilyCombo_ = nullptr;
   fontSizeCombo_ = nullptr;
@@ -6474,6 +7022,10 @@ void MainWindow::rebuildContextToolbar() {
     case ContextToolbarMode::Snapshots:
       title = tr("Snapshots");
       modeAccent = QColor(QStringLiteral("#22c55e"));
+      break;
+    case ContextToolbarMode::Github:
+      title = tr("GitHub");
+      modeAccent = QColor(QStringLiteral("#6366f1"));
       break;
   }
 
@@ -6611,6 +7163,11 @@ void MainWindow::rebuildContextToolbar() {
     fontToolBar_->addAction(actionSnapshotCapture_);
     fontToolBar_->addAction(actionSnapshotCompare_);
     fontToolBar_->addAction(actionSnapshotGallery_);
+  } else if (contextToolbarMode_ == ContextToolbarMode::Github) {
+    fontToolBar_->addAction(actionGithubLogin_);
+    fontToolBar_->addAction(actionGitInitRepo_);
+    fontToolBar_->addAction(actionGitCommit_);
+    fontToolBar_->addAction(actionGitPush_);
   }
 
   QWidget* spacer = new QWidget(fontToolBar_);

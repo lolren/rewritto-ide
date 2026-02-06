@@ -91,6 +91,7 @@ class MainWindow final : public QMainWindow {
   enum class ContextToolbarMode {
     Fonts,
     Snapshots,
+    Github,
   };
 
   SketchManager* sketchManager_ = nullptr;
@@ -145,10 +146,15 @@ class MainWindow final : public QMainWindow {
   QAction* actionToggleFontToolBar_ = nullptr;
   QAction* actionContextFontsMode_ = nullptr;
   QAction* actionContextSnapshotsMode_ = nullptr;
+  QAction* actionContextGithubMode_ = nullptr;
   QActionGroup* contextModeGroup_ = nullptr;
   QAction* actionSnapshotCapture_ = nullptr;
   QAction* actionSnapshotCompare_ = nullptr;
   QAction* actionSnapshotGallery_ = nullptr;
+  QAction* actionGithubLogin_ = nullptr;
+  QAction* actionGitInitRepo_ = nullptr;
+  QAction* actionGitCommit_ = nullptr;
+  QAction* actionGitPush_ = nullptr;
   QAction* actionRefreshBoards_ = nullptr;
   QAction* actionRefreshPorts_ = nullptr;
   QAction* actionSelectBoard_ = nullptr;
@@ -361,6 +367,10 @@ class MainWindow final : public QMainWindow {
   void showCodeSnapshotCompare();
   void showCodeSnapshotsGallery();
   void restoreCodeSnapshot(const QString& snapshotId);
+  void loginToGithub();
+  void initGitRepositoryForCurrentSketch();
+  void commitCurrentSketchToGit();
+  void pushCurrentSketchToRemote();
   void wireSignals();
   void rebuildRecentSketchesMenu();
   void rebuildExamplesMenu();
