@@ -1,6 +1,7 @@
 #include "code_snapshot_compare_dialog.h"
 
 #include <algorithm>
+#include <utility>
 
 #include <QAbstractItemView>
 #include <QCheckBox>
@@ -19,6 +20,10 @@
 #include <QSplitter>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTextBlock>
+#include <QTextCursor>
+#include <QTextEdit>
+#include <QTextFormat>
 #include <QVariant>
 #include <QVBoxLayout>
 
@@ -76,6 +81,126 @@ QString snapshotDisplayLabel(const CodeSnapshotStore::SnapshotMeta& meta, const 
     return owner->tr("%1  %2").arg(when, comment);
   }
   return owner->tr("%1  (%2)").arg(when, meta.id.left(12));
+}
+
+QString normalizeDiffText(QString text) {
+  text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+  text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+  return text;
+}
+
+QVector<int> allLineIndexes(const QString& text) {
+  const QStringList lines = normalizeDiffText(text).split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+  QVector<int> indexes;
+  indexes.reserve(lines.size());
+  for (int i = 0; i < lines.size(); ++i) {
+    indexes.push_back(i);
+  }
+  return indexes;
+}
+
+struct LineDiffHighlight final {
+  QVector<int> leftChanged;
+  QVector<int> rightChanged;
+  bool approximated = false;
+};
+
+LineDiffHighlight computeLineDiffHighlight(const QString& leftText, const QString& rightText) {
+  LineDiffHighlight out;
+
+  const QStringList leftLines =
+      normalizeDiffText(leftText).split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+  const QStringList rightLines =
+      normalizeDiffText(rightText).split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+
+  const int leftCount = leftLines.size();
+  const int rightCount = rightLines.size();
+  if (leftCount == 0 && rightCount == 0) {
+    return out;
+  }
+
+  constexpr qint64 kMaxDpCells = 4LL * 1000 * 1000;
+  const qint64 dpCells = static_cast<qint64>(leftCount + 1) *
+                         static_cast<qint64>(rightCount + 1);
+  if (dpCells > kMaxDpCells) {
+    out.leftChanged = allLineIndexes(leftText);
+    out.rightChanged = allLineIndexes(rightText);
+    out.approximated = true;
+    return out;
+  }
+
+  QVector<int> dp((leftCount + 1) * (rightCount + 1), 0);
+  const int rowStride = rightCount + 1;
+  auto at = [&dp, rowStride](int i, int j) -> int& { return dp[i * rowStride + j]; };
+
+  for (int i = 1; i <= leftCount; ++i) {
+    for (int j = 1; j <= rightCount; ++j) {
+      if (leftLines.at(i - 1) == rightLines.at(j - 1)) {
+        at(i, j) = at(i - 1, j - 1) + 1;
+      } else {
+        at(i, j) = std::max(at(i - 1, j), at(i, j - 1));
+      }
+    }
+  }
+
+  QVector<int> leftChangedReversed;
+  QVector<int> rightChangedReversed;
+  leftChangedReversed.reserve(leftCount);
+  rightChangedReversed.reserve(rightCount);
+
+  int i = leftCount;
+  int j = rightCount;
+  while (i > 0 && j > 0) {
+    if (leftLines.at(i - 1) == rightLines.at(j - 1)) {
+      --i;
+      --j;
+      continue;
+    }
+    if (at(i - 1, j) >= at(i, j - 1)) {
+      leftChangedReversed.push_back(i - 1);
+      --i;
+    } else {
+      rightChangedReversed.push_back(j - 1);
+      --j;
+    }
+  }
+  while (i > 0) {
+    leftChangedReversed.push_back(i - 1);
+    --i;
+  }
+  while (j > 0) {
+    rightChangedReversed.push_back(j - 1);
+    --j;
+  }
+
+  out.leftChanged = std::move(leftChangedReversed);
+  out.rightChanged = std::move(rightChangedReversed);
+  std::sort(out.leftChanged.begin(), out.leftChanged.end());
+  std::sort(out.rightChanged.begin(), out.rightChanged.end());
+  return out;
+}
+
+void applyLineHighlights(QPlainTextEdit* editor, const QVector<int>& changedLines, const QColor& color) {
+  if (!editor) {
+    return;
+  }
+  QVector<QTextEdit::ExtraSelection> selections;
+  selections.reserve(changedLines.size());
+  for (int lineIndex : changedLines) {
+    if (lineIndex < 0) {
+      continue;
+    }
+    const QTextBlock block = editor->document()->findBlockByNumber(lineIndex);
+    if (!block.isValid()) {
+      continue;
+    }
+    QTextEdit::ExtraSelection selection;
+    selection.cursor = QTextCursor(block);
+    selection.format.setProperty(QTextFormat::FullWidthSelection, true);
+    selection.format.setBackground(color);
+    selections.push_back(std::move(selection));
+  }
+  editor->setExtraSelections(selections);
 }
 }  // namespace
 
@@ -413,6 +538,8 @@ void CodeSnapshotCompareDialog::updatePreview() {
   if (selected.isEmpty()) {
     leftPreview_->clear();
     rightPreview_->clear();
+    leftPreview_->setExtraSelections({});
+    rightPreview_->setExtraSelections({});
     return;
   }
 
@@ -420,19 +547,51 @@ void CodeSnapshotCompareDialog::updatePreview() {
   if (row < 0 || row >= visibleEntries_.size()) {
     leftPreview_->clear();
     rightPreview_->clear();
+    leftPreview_->setExtraSelections({});
+    rightPreview_->setExtraSelections({});
     return;
   }
 
   const DiffEntry& entry = visibleEntries_.at(row);
+  const bool leftIsBinary = entry.leftExists && entry.leftBytes.contains('\0');
+  const bool rightIsBinary = entry.rightExists && entry.rightBytes.contains('\0');
+  QString leftText;
+  QString rightText;
   if (entry.leftExists) {
-    leftPreview_->setPlainText(decodeFileText(entry.leftBytes, this));
+    leftText = decodeFileText(entry.leftBytes, this);
+    leftPreview_->setPlainText(leftText);
   } else {
     leftPreview_->setPlainText(tr("[File does not exist in left source]"));
   }
   if (entry.rightExists) {
-    rightPreview_->setPlainText(decodeFileText(entry.rightBytes, this));
+    rightText = decodeFileText(entry.rightBytes, this);
+    rightPreview_->setPlainText(rightText);
   } else {
     rightPreview_->setPlainText(tr("[File does not exist in right source]"));
   }
-}
 
+  leftPreview_->setExtraSelections({});
+  rightPreview_->setExtraSelections({});
+
+  QColor leftColor = QColor(QStringLiteral("#dc2626"));
+  leftColor.setAlpha(54);
+  QColor rightColor = QColor(QStringLiteral("#16a34a"));
+  rightColor.setAlpha(52);
+
+  if (entry.unchanged || leftIsBinary || rightIsBinary) {
+    return;
+  }
+
+  if (!entry.leftExists && entry.rightExists) {
+    applyLineHighlights(rightPreview_, allLineIndexes(rightText), rightColor);
+    return;
+  }
+  if (entry.leftExists && !entry.rightExists) {
+    applyLineHighlights(leftPreview_, allLineIndexes(leftText), leftColor);
+    return;
+  }
+
+  const LineDiffHighlight lineDiff = computeLineDiffHighlight(leftText, rightText);
+  applyLineHighlights(leftPreview_, lineDiff.leftChanged, leftColor);
+  applyLineHighlights(rightPreview_, lineDiff.rightChanged, rightColor);
+}
