@@ -2010,12 +2010,12 @@ void MainWindow::createLayout() {
 
   restyleContextModeToolBar();
 
-  auto* contextModeGroup = new QActionGroup(this);
-  contextModeGroup->setExclusive(true);
-  contextModeGroup->addAction(actionContextBuildMode_);
-  contextModeGroup->addAction(actionContextFontsMode_);
-  contextModeGroup->addAction(actionContextSnapshotsMode_);
-  connect(contextModeGroup, &QActionGroup::triggered, this,
+  contextModeGroup_ = new QActionGroup(this);
+  contextModeGroup_->setExclusive(true);
+  contextModeGroup_->addAction(actionContextBuildMode_);
+  contextModeGroup_->addAction(actionContextFontsMode_);
+  contextModeGroup_->addAction(actionContextSnapshotsMode_);
+  connect(contextModeGroup_, &QActionGroup::triggered, this,
           [this](QAction* action) {
             if (action == actionContextBuildMode_) {
               setContextToolbarMode(ContextToolbarMode::Build);
@@ -2023,6 +2023,11 @@ void MainWindow::createLayout() {
               setContextToolbarMode(ContextToolbarMode::Fonts);
             } else if (action == actionContextSnapshotsMode_) {
               setContextToolbarMode(ContextToolbarMode::Snapshots);
+            }
+            if (actionToggleFontToolBar_ && !actionToggleFontToolBar_->isChecked()) {
+              actionToggleFontToolBar_->setChecked(true);
+            } else if (fontToolBar_) {
+              fontToolBar_->show();
             }
           });
 
@@ -2040,10 +2045,14 @@ void MainWindow::createLayout() {
               if (fontToolBar_) {
                 fontToolBar_->setVisible(visible);
               }
+              syncContextModeSelection(visible);
             });
-    fontToolBar_->setVisible(actionToggleFontToolBar_->isChecked());
+    const bool contextVisible = actionToggleFontToolBar_->isChecked();
+    fontToolBar_->setVisible(contextVisible);
+    syncContextModeSelection(contextVisible);
   } else if (fontToolBar_) {
     fontToolBar_->hide();
+    syncContextModeSelection(false);
   }
 
   // --- Activity Bar (Left Vertical Bar) ---
@@ -3075,6 +3084,7 @@ void MainWindow::restoreStateFromSettings() {
     const QSignalBlocker blocker(actionToggleFontToolBar_);
     actionToggleFontToolBar_->setChecked(fontToolBar_->isVisible());
   }
+  syncContextModeSelection(fontToolBar_ && fontToolBar_->isVisible());
 }
 
 void MainWindow::refreshInstalledBoards() {
@@ -6183,6 +6193,47 @@ void MainWindow::restyleContextModeToolBar() {
            colorHex(snapshotsChecked), colorHex(checkedText)));
 }
 
+void MainWindow::syncContextModeSelection(bool contextVisible) {
+  if (!contextModeGroup_) {
+    return;
+  }
+
+  if (!contextVisible) {
+    const bool wasExclusive = contextModeGroup_->isExclusive();
+    contextModeGroup_->setExclusive(false);
+    if (actionContextBuildMode_) actionContextBuildMode_->setChecked(false);
+    if (actionContextFontsMode_) actionContextFontsMode_->setChecked(false);
+    if (actionContextSnapshotsMode_) actionContextSnapshotsMode_->setChecked(false);
+    contextModeGroup_->setExclusive(wasExclusive);
+    return;
+  }
+
+  const bool hasCheckedAction =
+      (actionContextBuildMode_ && actionContextBuildMode_->isChecked()) ||
+      (actionContextFontsMode_ && actionContextFontsMode_->isChecked()) ||
+      (actionContextSnapshotsMode_ && actionContextSnapshotsMode_->isChecked());
+  if (hasCheckedAction) {
+    return;
+  }
+
+  QAction* modeAction = nullptr;
+  switch (contextToolbarMode_) {
+    case ContextToolbarMode::Build:
+      modeAction = actionContextBuildMode_;
+      break;
+    case ContextToolbarMode::Fonts:
+      modeAction = actionContextFontsMode_;
+      break;
+    case ContextToolbarMode::Snapshots:
+      modeAction = actionContextSnapshotsMode_;
+      break;
+  }
+  if (modeAction) {
+    const QSignalBlocker blocker(contextModeGroup_);
+    modeAction->setChecked(true);
+  }
+}
+
 void MainWindow::enforceToolbarLayout() {
   if (!buildToolBar_ || !fontToolBar_) {
     return;
@@ -6259,30 +6310,26 @@ void MainWindow::rebuildContextToolbar() {
       break;
   }
 
-  const QColor accentColor = blendColors(modeAccent, highlightColor, 0.25);
+  const QColor accentColor = blendColors(modeAccent, highlightColor, 0.18);
   const QColor gradientStartColor =
-      blendColors(panelColor, accentColor, darkTheme ? 0.24 : 0.10);
+      blendColors(panelColor, accentColor, darkTheme ? 0.12 : 0.06);
   const QColor gradientEndColor =
-      blendColors(panelColor, accentColor, darkTheme ? 0.14 : 0.05);
+      blendColors(panelColor, accentColor, darkTheme ? 0.06 : 0.03);
   const QColor borderColor =
-      blendColors(borderBase, accentColor, darkTheme ? 0.60 : 0.32);
-  const QColor toolbarTextColor =
-      blendColors(textColor, accentColor, darkTheme ? 0.04 : 0.08);
-  const QColor buttonBackground =
-      blendColors(panelColor, accentColor, darkTheme ? 0.32 : 0.12);
+      blendColors(borderBase, accentColor, darkTheme ? 0.44 : 0.22);
+  const QColor toolbarTextColor = textColor;
+  const QColor buttonBackground = pal.color(QPalette::Button);
+  const QColor buttonTextColor = pal.color(QPalette::ButtonText);
   const QColor buttonBorder =
-      blendColors(borderBase, accentColor, darkTheme ? 0.60 : 0.34);
+      blendColors(borderBase, buttonTextColor, darkTheme ? 0.20 : 0.12);
   const QColor buttonHover =
-      blendColors(buttonBackground, textColor, darkTheme ? 0.16 : 0.08);
+      blendColors(buttonBackground, highlightColor, darkTheme ? 0.20 : 0.12);
   const QColor buttonPressed =
-      blendColors(buttonBackground, textColor, darkTheme ? 0.24 : 0.14);
-  const QColor checkedBackground =
-      blendColors(accentColor, highlightColor, darkTheme ? 0.22 : 0.10);
-  const QColor checkedTextColor = readableForeground(checkedBackground);
-  const QColor comboBackground =
-      blendColors(baseColor, accentColor, darkTheme ? 0.34 : 0.10);
-  const QColor comboBorder =
-      blendColors(borderBase, accentColor, darkTheme ? 0.60 : 0.30);
+      blendColors(buttonBackground, highlightColor, darkTheme ? 0.30 : 0.20);
+  const QColor checkedBackground = pal.color(QPalette::Highlight);
+  const QColor checkedTextColor = pal.color(QPalette::HighlightedText);
+  const QColor comboBackground = baseColor;
+  const QColor comboBorder = borderBase;
 
   fontToolBar_->setStyleSheet(QString(
       "QToolBar#ContextToolBar {"
@@ -6299,7 +6346,7 @@ void MainWindow::rebuildContextToolbar() {
       "  margin-right: 6px;"
       "}"
       "QToolBar#ContextToolBar QToolButton {"
-      "  color: %4;"
+      "  color: %14;"
       "  border: 1px solid %6;"
       "  border-radius: 6px;"
       "  background-color: %7;"
@@ -6317,7 +6364,7 @@ void MainWindow::rebuildContextToolbar() {
       "  color: %11;"
       "}"
       "QToolBar#ContextToolBar QComboBox {"
-      "  color: %4;"
+      "  color: %14;"
       "  border: 1px solid %12;"
       "  border-radius: 6px;"
       "  background-color: %13;"
@@ -6333,7 +6380,7 @@ void MainWindow::rebuildContextToolbar() {
            colorHex(buttonBorder), colorHex(buttonBackground), colorHex(buttonHover),
            colorHex(buttonPressed), colorHex(checkedBackground),
            colorHex(checkedTextColor), colorHex(comboBorder),
-           colorHex(comboBackground)));
+           colorHex(comboBackground), colorHex(buttonTextColor)));
 
   auto* titleLabel = new QLabel(title, fontToolBar_);
   titleLabel->setObjectName("ContextToolbarTitle");
@@ -6426,20 +6473,6 @@ void MainWindow::rebuildContextToolbar() {
   QWidget* spacer = new QWidget(fontToolBar_);
   spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
   fontToolBar_->addWidget(spacer);
-
-  QAction* hideAction = fontToolBar_->addAction(
-      QIcon::fromTheme("window-close",
-                       style()->standardIcon(QStyle::SP_TitleBarCloseButton)),
-      tr("Hide"));
-  hideAction->setToolTip(tr("Hide context toolbar"));
-  connect(hideAction, &QAction::triggered, this, [this] {
-    if (fontToolBar_) {
-      fontToolBar_->hide();
-    }
-    if (actionToggleFontToolBar_) {
-      actionToggleFontToolBar_->setChecked(false);
-    }
-  });
 }
 
 void MainWindow::updateFontFromToolbar() {

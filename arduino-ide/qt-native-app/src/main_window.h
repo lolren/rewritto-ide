@@ -17,6 +17,7 @@
 #include "mi_parser.h"
 
 class QAction;
+class QActionGroup;
 class QFileSystemModel;
 class QDockWidget;
 class QMenu;
@@ -146,6 +147,7 @@ class MainWindow final : public QMainWindow {
   QAction* actionContextBuildMode_ = nullptr;
   QAction* actionContextFontsMode_ = nullptr;
   QAction* actionContextSnapshotsMode_ = nullptr;
+  QActionGroup* contextModeGroup_ = nullptr;
   QAction* actionSnapshotCapture_ = nullptr;
   QAction* actionSnapshotCompare_ = nullptr;
   QAction* actionSnapshotGallery_ = nullptr;
@@ -350,6 +352,7 @@ class MainWindow final : public QMainWindow {
   void createMenus();
   void createLayout();
   void enforceToolbarLayout();
+  void syncContextModeSelection(bool contextVisible);
   void updateFontFromToolbar();
   void setContextToolbarMode(ContextToolbarMode mode);
   void restyleContextModeToolBar();
