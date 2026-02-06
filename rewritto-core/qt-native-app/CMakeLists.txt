@@ -95,7 +95,7 @@ set(REWRITTO_IDE_VERSION "${PROJECT_VERSION}")
 find_package(Git QUIET)
 if (GIT_FOUND)
   execute_process(
-    COMMAND "${GIT_EXECUTABLE}" describe --tags --dirty --always
+    COMMAND "${GIT_EXECUTABLE}" describe --tags --always
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     OUTPUT_VARIABLE REWRITTO_IDE_GIT_VERSION
     OUTPUT_STRIP_TRAILING_WHITESPACE
