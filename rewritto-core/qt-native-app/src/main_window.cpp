@@ -2476,7 +2476,7 @@ void MainWindow::createLayout() {
 
   QAction* sketchbookToggle = sideBarToolBar_->addAction(createMonoIcon(QStyle::SP_DialogOpenButton, "folder"), "");
   sketchbookToggle->setCheckable(true);
-  sketchbookToggle->setChecked(true);
+  sketchbookToggle->setChecked(false);
   sketchbookToggle->setToolTip(tr("Sketchbook"));
 
   QAction* boardsToggle = sideBarToolBar_->addAction(createMonoIcon(QStyle::SP_ComputerIcon, "applications-engineering"), "");
@@ -2601,6 +2601,7 @@ void MainWindow::createLayout() {
   addDockWidget(Qt::LeftDockWidgetArea, searchDock_);
   tabifyDockWidget(fileDock_, searchDock_);
   searchDock_->hide();
+  fileDock_->hide();
 
   // Activity Bar Logic
   auto hideLeftPanel = [this] {
