@@ -1,6 +1,6 @@
-# Rewritto Ide - Build Requirements
+# Rewritto-ide - Build Requirements
 # ====================================
-# This file lists all dependencies required to build Rewritto Ide
+# This file lists all dependencies required to build Rewritto-ide
 # from source on Linux.
 
 ## Build Tools
@@ -69,7 +69,7 @@ sudo dnf install \
 # If Qt6 is not available in your distribution, you can build it from source:
 # https://wiki.qt.io/Qt_For_Tools_and_Technologies
 
-## Runtime Dependencies (for running Rewritto Ide)
+## Runtime Dependencies (for running Rewritto-ide)
 # ===================================================
 - Qt6 Runtime (Core, Widgets, Network)
 - g++ runtime library
@@ -130,4 +130,4 @@ Qt6 packages are in the official repositories.
 ## Distribution Packaging
 # ========================
 # For building AppImage distributions, see:
-# arduino-ide/qt-native-app/packaging/appimage/build-appimage.sh
+# rewritto-core/qt-native-app/packaging/appimage/build-appimage.sh

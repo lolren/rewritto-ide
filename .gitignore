@@ -1,9 +1,13 @@
-# Build directories
-build/
-build-*/
-dist/
-install/
-*.AppImage
+# Build outputs
+/build/*
+!/build/rewritto-ide
+!/build/arduino-cli
+/build-*/
+/dist/*
+!/dist/*-native.tar.gz
+/dist/*.AppImage
+!/dist/Rewritto-ide-x86_64.AppImage
+/install/
 
 # CMake files
 CMakeCache.txt
@@ -38,6 +42,9 @@ ctest-xdg-*
 *.tar.gz
 *.tgz
 
+# Keep native release artifacts tracked
+!/dist/*-native.tar.gz
+
 # IDE files
 .vscode/
 .idea/
@@ -67,7 +74,7 @@ gemini*.md
 .local/
 *.local
 
-# Node.js (from original Arduino IDE - kept for reference)
+# Node.js (from original Rewritto-ide - kept for reference)
 node_modules/
 package-lock.json
 yarn.lock

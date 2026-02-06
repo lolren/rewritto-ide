@@ -11,7 +11,7 @@
 #include <QWebEngineView>
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
-  setWindowTitle("Arduino IDE (Qt)");
+  setWindowTitle("Rewritto-ide (Qt)");
 
   webView_ = new QWebEngineView(this);
   webView_->setContextMenuPolicy(Qt::NoContextMenu);
@@ -26,7 +26,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     QFile bridgeFile(QStringLiteral(":/qt-app/resources/bridge.js"));
     if (bridgeFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
       QWebEngineScript bridgeScript;
-      bridgeScript.setName(QStringLiteral("arduino-ide-qt-bridge"));
+      bridgeScript.setName(QStringLiteral("rewritto-ide-qt-bridge"));
       bridgeScript.setInjectionPoint(QWebEngineScript::DocumentCreation);
       bridgeScript.setRunsOnSubFrames(true);
       bridgeScript.setWorldId(QWebEngineScript::MainWorld);
@@ -49,7 +49,7 @@ void MainWindow::loadInitialUrl() {
 
 QUrl MainWindow::resolveInitialUrl() {
   QCommandLineParser parser;
-  parser.setApplicationDescription("Arduino IDE Qt shell (prototype)");
+  parser.setApplicationDescription("Rewritto-ide Qt shell (prototype)");
   parser.addHelpOption();
   QCommandLineOption urlOpt(QStringList{QStringLiteral("u"), QStringLiteral("url")},
                             QStringLiteral("URL to load (e.g. http://127.0.0.1:PORT/)"),

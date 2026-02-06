@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop">
+  <id>com.rewritto.ide</id>
+  <name>Rewritto-ide</name>
+  <summary>Native Qt6 Arduino-compatible IDE</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-only</project_license>
+  <developer id="com.rewritto">
+    <name>Rewritto</name>
+  </developer>
+  <description>
+    <p>Rewritto-ide is a native Qt6 Arduino-compatible IDE for Linux with a desktop-first workflow focused on board, library, build, upload, and serial tooling parity.</p>
+    <p>It integrates with Arduino CLI for board and library management, compiling, and uploading sketches.</p>
+  </description>
+  <launchable type="desktop-id">com.rewritto.ide.desktop</launchable>
+  <url type="homepage">https://github.com/lolren/rewritto-ide</url>
+  <url type="bugtracker">https://github.com/lolren/rewritto-ide/issues</url>
+  <provides>
+    <binary>rewritto-ide</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+  <categories>
+    <category>Development</category>
+    <category>IDE</category>
+    <category>Electronics</category>
+  </categories>
+  <keywords>
+    <keyword>arduino</keyword>
+    <keyword>ide</keyword>
+    <keyword>electronics</keyword>
+    <keyword>sketch</keyword>
+    <keyword>microcontroller</keyword>
+    <keyword>avr</keyword>
+  </keywords>
+</component>

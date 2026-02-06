@@ -1,4 +1,4 @@
-# Rewritto Ide - Build Requirements
+# Rewritto-ide - Build Requirements
 # Native Qt6 Linux Build Dependencies
 # =====================================
 
@@ -67,7 +67,7 @@ sudo dnf install \
 If Qt6 is not available in your distribution, you can build it from source:
 https://wiki.qt.io/Qt_For_Tools_and_Technologies
 
-## Runtime Dependencies (for running Rewritto Ide)
+## Runtime Dependencies (for running Rewritto-ide)
 - Qt6 Runtime (Core, Widgets, Network)
 - g++ runtime library
 - X11 libraries

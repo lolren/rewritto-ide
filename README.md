@@ -1,8 +1,8 @@
-# Rewritto Ide
+# Rewritto-ide
 
-A native Qt6 Arduino-compatible IDE for Linux. Rewritto Ide is a lightweight, Electron-free alternative to the official Arduino IDE 2.x, providing feature parity while using native Qt6 widgets for better performance and system integration.
+A native Qt6 Arduino-compatible IDE for Linux. Rewritto-ide is a lightweight, Electron-free environment built with native Qt6 widgets for performance and system integration.
 
-![Rewritto Ide](https://img.shields.io/badge/version-1.0.0-blue)
+![Rewritto-ide](https://img.shields.io/badge/version-1.0.0-blue)
 ![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-green)
 
 ## Features
@@ -64,7 +64,7 @@ sudo dnf install qt6-qtbase qt6-qttools cmake gcc-c++ make
 ```bash
 # Clone the repository
 git clone https://github.com/lolren/rewritto-ide.git
-cd rewritto-ide/arduino-ide/qt-native-app
+cd rewritto-ide/rewritto-core/qt-native-app
 
 # Configure with CMake
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -78,7 +78,7 @@ cmake --build build -j$(nproc)
 
 ### AppImage Build
 ```bash
-cd arduino-ide/qt-native-app
+cd rewritto-core/qt-native-app
 
 # Build native executable first
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -89,27 +89,27 @@ chmod +x packaging/appimage/build-appimage.sh
 ./packaging/appimage/build-appimage.sh
 ```
 
-The AppImage will be created in `dist/Rewritto_Ide-x86_64.AppImage`.
+The AppImage will be created in `dist/Rewritto-ide-x86_64.AppImage`.
 
 ### Release Artifacts
 
 Two Linux artifacts are published per release:
 
 - Native tarball: `rewritto-ide-linux-x86_64-native.tar.gz`
-- AppImage: `Rewritto_Ide-x86_64.AppImage`
+- AppImage: `Rewritto-ide-x86_64.AppImage`
 
 Local release output folder:
 
-- `arduino-ide/qt-native-app/dist`
+- `rewritto-core/qt-native-app/dist`
 
 GitHub release workflow:
 
-- `arduino-ide/.github/workflows/release.yml`
+- `rewritto-core/.github/workflows/release.yml`
 
 ## Usage
 
 ### First Launch
-1. Select your sketchbook location (default: `~/Rewritto`)
+1. Select your sketchbook location (default: `~/Rewritto-ide`)
 2. Install board packages via **Tools > Board > Boards Manager**
 3. Select your board from **Tools > Board**
 4. Select your port from **Tools > Port**
@@ -127,21 +127,21 @@ GitHub release workflow:
 
 ## Documentation
 
-- [BUILDING.md](arduino-ide/qt-native-app/BUILDING.md) - Detailed build instructions
-- [FEATURE_PARITY_TODO.md](arduino-ide/qt-native-app/FEATURE_PARITY_TODO.md) - Feature parity roadmap
-- [docs/](arduino-ide/qt-native-app/docs/) - Additional documentation
+- [BUILDING.md](rewritto-core/qt-native-app/BUILDING.md) - Detailed build instructions
+- [FEATURE_PARITY_TODO.md](rewritto-core/qt-native-app/FEATURE_PARITY_TODO.md) - Feature parity roadmap
+- [docs/](rewritto-core/qt-native-app/docs/) - Additional documentation
 
 ## Contributing
 
-Contributions are welcome! Please see [CONTRIBUTING.md](arduino-ide/qt-native-app/docs/CONTRIBUTING.md) for guidelines.
+Contributions are welcome! Please see [CONTRIBUTING.md](rewritto-core/qt-native-app/docs/CONTRIBUTING.md) for guidelines.
 
 ## License
 
-This project is licensed under AGPL-3.0-or-later. See [LICENSE.txt](arduino-ide/qt-native-app/LICENSE.txt) for details.
+This project is licensed under AGPL-3.0-or-later. See [LICENSE.txt](rewritto-core/qt-native-app/LICENSE.txt) for details.
 
 ## Acknowledgments
 
-- Based on the [Arduino IDE 2.x](https://github.com/arduino/arduino-ide) project
+- Inspired by established Arduino-compatible desktop IDE workflows
 - Uses [Arduino CLI](https://github.com/arduino/arduino-cli) for build operations
 - Uses [arduino-language-server](https://github.com/arduino/arduino-language-server) for code intelligence
 - Built with [Qt6](https://www.qt.io/)
@@ -153,4 +153,4 @@ This project is licensed under AGPL-3.0-or-later. See [LICENSE.txt](arduino-ide/
 
 ---
 
-**Rewritto Ide** - A native Qt6 Arduino-compatible IDE for Linux
+**Rewritto-ide** - A native Qt6 Arduino-compatible IDE for Linux
