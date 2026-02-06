@@ -6496,7 +6496,6 @@ void MainWindow::rebuildContextToolbar() {
 
   const QPalette pal = palette();
   const QColor panelColor = pal.color(QPalette::Window);
-  const QColor baseColor = pal.color(QPalette::Base);
   const QColor textColor = pal.color(QPalette::WindowText);
   const QColor borderBase = pal.color(QPalette::Mid);
   const QColor highlightColor = pal.color(QPalette::Highlight);
@@ -6542,21 +6541,6 @@ void MainWindow::rebuildContextToolbar() {
       blendColors(buttonBackground, accentColor, darkTheme ? 0.18 : 0.12);
   const QColor checkedTextColor =
       readableForeground(checkedBackground);
-  const QColor comboBackground =
-      blendColors(buttonBackground, panelColor, darkTheme ? 0.26 : 0.18);
-  const QColor comboTextColor = readableForeground(comboBackground);
-  const QColor comboBorder =
-      blendColors(borderBase, comboTextColor, darkTheme ? 0.30 : 0.20);
-  const QColor comboHover =
-      blendColors(comboBackground, accentColor, darkTheme ? 0.18 : 0.12);
-  const QColor comboFocusBorder =
-      blendColors(comboBorder, accentColor, darkTheme ? 0.38 : 0.28);
-  const QColor comboPopupBackground =
-      blendColors(baseColor, comboBackground, darkTheme ? 0.44 : 0.36);
-  const QColor comboPopupText = readableForeground(comboPopupBackground);
-  const QColor comboSelectionBackground =
-      blendColors(comboPopupBackground, accentColor, darkTheme ? 0.45 : 0.34);
-  const QColor comboSelectionText = readableForeground(comboSelectionBackground);
 
   fontToolBar_->setStyleSheet(QString(
       "QToolBar#ContextToolBar {"
@@ -6590,56 +6574,12 @@ void MainWindow::rebuildContextToolbar() {
       "  border-color: %9;"
       "  color: %10;"
       "}"
-      "QToolBar#ContextToolBar QComboBox {"
-      "  color: %14;"
-      "  border: 1px solid %11;"
-      "  border-radius: 6px;"
-      "  background-color: %12;"
-      "  padding: 3px 24px 3px 8px;"
-      "  min-height: 22px;"
-      "}"
-      "QToolBar#ContextToolBar QComboBox:hover,"
-      "QToolBar#ContextToolBar QComboBox:on {"
-      "  background-color: %15;"
-      "  border-color: %16;"
-      "}"
-      "QToolBar#ContextToolBar QComboBox QLineEdit {"
-      "  color: %14;"
-      "  background-color: transparent;"
-      "  border: none;"
-      "  padding: 0px;"
-      "  selection-background-color: %19;"
-      "  selection-color: %20;"
-      "}"
-      "QToolBar#ContextToolBar QComboBox::drop-down {"
-      "  border: none;"
-      "  width: 20px;"
-      "  background: transparent;"
-      "}"
-      "QToolBar#ContextToolBar QComboBox QAbstractItemView {"
-      "  color: %17;"
-      "  background-color: %18;"
-      "  border: 1px solid %16;"
-      "  border-radius: 6px;"
-      "  selection-background-color: %19;"
-      "  selection-color: %20;"
-      "  outline: none;"
-      "}"
-      "QToolBar#ContextToolBar QComboBox QAbstractItemView::item {"
-      "  color: %17;"
-      "  min-height: 22px;"
-      "  padding: 5px 8px;"
       "}")
       .arg(colorHex(gradientStartColor), colorHex(gradientEndColor),
            colorHex(borderColor), colorHex(toolbarTextColor), colorHex(buttonBorder),
            colorHex(buttonBackground), colorHex(buttonHover),
            colorHex(buttonPressed), colorHex(checkedBackground),
-           colorHex(checkedTextColor), colorHex(comboBorder),
-           colorHex(comboBackground), colorHex(buttonTextColor),
-           colorHex(comboTextColor), colorHex(comboHover),
-           colorHex(comboFocusBorder), colorHex(comboPopupText),
-           colorHex(comboPopupBackground), colorHex(comboSelectionBackground),
-           colorHex(comboSelectionText)));
+           colorHex(checkedTextColor), colorHex(buttonTextColor)));
 
   auto* titleLabel = new QLabel(title, fontToolBar_);
   titleLabel->setObjectName("ContextToolbarTitle");
@@ -6665,15 +6605,19 @@ void MainWindow::rebuildContextToolbar() {
     fontToolBar_->addAction(actionRefreshPorts_);
   } else if (contextToolbarMode_ == ContextToolbarMode::Fonts) {
     fontFamilyCombo_ = new QComboBox(fontToolBar_);
-    fontFamilyCombo_->setEditable(true);
-    fontFamilyCombo_->setMinimumWidth(180);
+    fontFamilyCombo_->setEditable(false);
+    fontFamilyCombo_->setInsertPolicy(QComboBox::NoInsert);
+    fontFamilyCombo_->setMinimumWidth(200);
+    fontFamilyCombo_->setMaximumWidth(280);
     QFontDatabase fontDb;
     fontFamilyCombo_->addItems(fontDb.families());
     fontToolBar_->addWidget(fontFamilyCombo_);
 
     fontSizeCombo_ = new QComboBox(fontToolBar_);
-    fontSizeCombo_->setEditable(true);
-    fontSizeCombo_->setMinimumWidth(64);
+    fontSizeCombo_->setEditable(false);
+    fontSizeCombo_->setInsertPolicy(QComboBox::NoInsert);
+    fontSizeCombo_->setMinimumWidth(120);
+    fontSizeCombo_->setMaximumWidth(180);
     for (int size : {8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72}) {
       fontSizeCombo_->addItem(QString::number(size));
     }
@@ -6688,7 +6632,8 @@ void MainWindow::rebuildContextToolbar() {
         if (familyIndex >= 0) {
           fontFamilyCombo_->setCurrentIndex(familyIndex);
         } else {
-          fontFamilyCombo_->setEditText(family);
+          fontFamilyCombo_->addItem(family);
+          fontFamilyCombo_->setCurrentIndex(fontFamilyCombo_->count() - 1);
         }
       }
 
@@ -6700,7 +6645,8 @@ void MainWindow::rebuildContextToolbar() {
         if (sizeIndex >= 0) {
           fontSizeCombo_->setCurrentIndex(sizeIndex);
         } else {
-          fontSizeCombo_->setEditText(sizeText);
+          fontSizeCombo_->addItem(sizeText);
+          fontSizeCombo_->setCurrentIndex(fontSizeCombo_->count() - 1);
         }
       }
 
@@ -6713,12 +6659,8 @@ void MainWindow::rebuildContextToolbar() {
                          style()->standardIcon(QStyle::SP_TitleBarShadeButton)));
     fontToolBar_->addAction(actionToggleBold_);
 
-    connect(fontFamilyCombo_, &QComboBox::editTextChanged, this,
-            [this](const QString&) { updateFontFromToolbar(); });
     connect(fontFamilyCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) { updateFontFromToolbar(); });
-    connect(fontSizeCombo_, &QComboBox::editTextChanged, this,
-            [this](const QString&) { updateFontFromToolbar(); });
     connect(fontSizeCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) { updateFontFromToolbar(); });
     connect(actionToggleBold_, &QAction::triggered, this,
