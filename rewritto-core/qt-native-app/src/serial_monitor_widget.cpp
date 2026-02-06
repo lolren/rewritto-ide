@@ -18,6 +18,7 @@
 #include <QSettings>
 #include <QTextBlock>
 #include <QTextCursor>
+#include <QTextDocument>
 #include <QTime>
 #include <QVBoxLayout>
 
@@ -72,12 +73,20 @@ SerialMonitorWidget::SerialMonitorWidget(QWidget* parent) : QWidget(parent) {
 
   clearButton_ = new QPushButton(tr("Clear"), this);
 
+  filterInput_ = new QLineEdit(this);
+  filterInput_->setObjectName("serialMonitorFilter");
+  filterInput_->setClearButtonEnabled(true);
+  filterInput_->setPlaceholderText(tr("Filter output..."));
+
   statusLabel_ = new QLabel(tr("Disconnected"), this);
 
   output_ = new QPlainTextEdit(this);
   output_->setObjectName("serialMonitorOutput");
   output_->setReadOnly(true);
-  output_->setMaximumBlockCount(5000);
+  rawOutputDocument_ = new QTextDocument(output_);
+  rawOutputDocument_->setMaximumBlockCount(5000);
+  filteredOutputDocument_ = new QTextDocument(output_);
+  output_->setDocument(rawOutputDocument_);
 
   input_ = new QLineEdit(this);
   input_->setObjectName("serialMonitorInput");
@@ -106,10 +115,15 @@ SerialMonitorWidget::SerialMonitorWidget(QWidget* parent) : QWidget(parent) {
   bottomRow->addWidget(input_, 1);
   bottomRow->addWidget(sendButton_);
 
+  auto* filterRow = new QHBoxLayout();
+  filterRow->addWidget(new QLabel(tr("Filter:"), this));
+  filterRow->addWidget(filterInput_, 1);
+
   auto* layout = new QVBoxLayout(this);
   layout->setContentsMargins(6, 6, 6, 6);
   layout->addLayout(topRow);
   layout->addWidget(statusLabel_);
+  layout->addLayout(filterRow);
   layout->addWidget(output_, 1);
   layout->addLayout(bottomRow);
 
@@ -162,7 +176,13 @@ SerialMonitorWidget::SerialMonitorWidget(QWidget* parent) : QWidget(parent) {
     lineText_.clear();
     lineCursor_ = 0;
     lineContentStart_ = 0;
-    output_->clear();
+    if (rawOutputDocument_) {
+      rawOutputDocument_->clear();
+    }
+    if (filteredOutputDocument_) {
+      filteredOutputDocument_->clear();
+    }
+    applyOutputFilter();
   });
   connect(saveButton_, &QPushButton::clicked, this, [this] {
     const QString stamp =
@@ -181,9 +201,20 @@ SerialMonitorWidget::SerialMonitorWidget(QWidget* parent) : QWidget(parent) {
       showError(tr("Could not write log file."));
       return;
     }
-    f.write(output_->toPlainText().toUtf8());
+    const QString logText =
+        rawOutputDocument_ ? rawOutputDocument_->toPlainText()
+                           : output_->toPlainText();
+    f.write(logText.toUtf8());
     f.close();
     statusLabel_->setText(tr("Saved log to %1").arg(QFileInfo(filePath).fileName()));
+  });
+  connect(filterInput_, &QLineEdit::textChanged, this, [this](const QString&) {
+    applyOutputFilter();
+    if (autoScrollCheck_ && autoScrollCheck_->isChecked()) {
+      if (auto* sb = output_->verticalScrollBar()) {
+        sb->setValue(sb->maximum());
+      }
+    }
   });
   connect(sendButton_, &QPushButton::clicked, this, [this] { emitSend(); });
   connect(input_, &QLineEdit::returnPressed, this, [this] { emitSend(); });
@@ -256,7 +287,7 @@ void SerialMonitorWidget::appendData(QByteArray data) {
     return;
   }
 
-  if (!output_) {
+  if (!output_ || !rawOutputDocument_) {
     return;
   }
 
@@ -265,7 +296,7 @@ void SerialMonitorWidget::appendData(QByteArray data) {
     return;
   }
 
-  QTextDocument* doc = output_->document();
+  QTextDocument* doc = rawOutputDocument_;
   bool dirtyLine = false;
 
   auto commitLineText = [this, doc] {
@@ -347,6 +378,8 @@ void SerialMonitorWidget::appendData(QByteArray data) {
     commitLineText();
   }
 
+  applyOutputFilter();
+
   if (autoScrollCheck_->isChecked()) {
     if (auto* sb = output_->verticalScrollBar()) {
       sb->setValue(sb->maximum());
@@ -359,6 +392,34 @@ void SerialMonitorWidget::showError(QString message) {
     return;
   }
   statusLabel_->setText(tr("Error: %1").arg(message));
+}
+
+void SerialMonitorWidget::applyOutputFilter() {
+  if (!output_ || !rawOutputDocument_ || !filteredOutputDocument_) {
+    return;
+  }
+
+  const QString filterText = filterInput_ ? filterInput_->text() : QString{};
+  if (filterText.isEmpty()) {
+    if (output_->document() != rawOutputDocument_) {
+      output_->setDocument(rawOutputDocument_);
+    }
+    return;
+  }
+
+  QStringList filteredLines;
+  for (QTextBlock block = rawOutputDocument_->begin(); block.isValid();
+       block = block.next()) {
+    const QString line = block.text();
+    if (line.contains(filterText, Qt::CaseInsensitive)) {
+      filteredLines.push_back(line);
+    }
+  }
+
+  filteredOutputDocument_->setPlainText(filteredLines.join(QLatin1Char('\n')));
+  if (output_->document() != filteredOutputDocument_) {
+    output_->setDocument(filteredOutputDocument_);
+  }
 }
 
 bool SerialMonitorWidget::eventFilter(QObject* watched, QEvent* event) {

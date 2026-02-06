@@ -1161,10 +1161,51 @@ QString buildStyleSheet(const ThemeSpec& t) {
     }
 
     QWidget#ToastWidget {
+        background-color: %3;
+        color: %2;
+        border: 1px solid %6;
+        border-radius: 10px;
+    }
+
+    QWidget#ToastWidget[platform="windows"] {
+        background-color: %1;
+    }
+
+    QWidget#ToastWidget QLabel#toastLabel {
+        color: %2;
+        background: transparent;
+    }
+
+    QWidget#ToastWidget QPushButton#toastActionButton {
         background-color: %5;
         color: %13;
-        border-radius: 8px;
-        padding: 16px 24px;
+        border: none;
+        border-radius: 6px;
+        padding: 6px 12px;
+        min-width: 70px;
+        font-weight: 600;
+    }
+
+    QWidget#ToastWidget QPushButton#toastActionButton:hover {
+        background-color: %9;
+        color: %2;
+    }
+
+    QWidget#ToastWidget QPushButton#toastActionButton:pressed {
+        background-color: %10;
+        color: %13;
+    }
+
+    QWidget#ToastWidget QToolButton#toastCloseButton {
+        color: %2;
+        border: none;
+        border-radius: 4px;
+        background: transparent;
+        padding: 2px;
+    }
+
+    QWidget#ToastWidget QToolButton#toastCloseButton:hover {
+        background-color: %9;
     }
 
     QWidget#OutputPanel {

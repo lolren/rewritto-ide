@@ -9,6 +9,7 @@ class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
+class QTextDocument;
 
 class SerialMonitorWidget final : public QWidget {
   Q_OBJECT
@@ -49,7 +50,10 @@ class SerialMonitorWidget final : public QWidget {
   QCheckBox* autoReconnectCheck_ = nullptr;
   QPushButton* saveButton_ = nullptr;
   QPushButton* clearButton_ = nullptr;
+  QLineEdit* filterInput_ = nullptr;
   QPlainTextEdit* output_ = nullptr;
+  QTextDocument* rawOutputDocument_ = nullptr;
+  QTextDocument* filteredOutputDocument_ = nullptr;
   QLineEdit* input_ = nullptr;
   QPushButton* sendButton_ = nullptr;
   QLabel* statusLabel_ = nullptr;
@@ -59,4 +63,5 @@ class SerialMonitorWidget final : public QWidget {
   void emitSend();
   QByteArray currentLineEndingBytes() const;
   void appendToSendHistory(QString entry);
+  void applyOutputFilter();
 };

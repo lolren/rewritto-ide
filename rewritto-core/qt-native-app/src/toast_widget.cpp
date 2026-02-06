@@ -1,6 +1,9 @@
 #include "toast_widget.h"
 
+#include <algorithm>
+
 #include <QEvent>
+#include <QGraphicsDropShadowEffect>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
@@ -10,25 +13,39 @@
 
 ToastWidget::ToastWidget(QWidget* parent) : QFrame(parent) {
   setObjectName("ToastWidget");
-  setFrameShape(QFrame::StyledPanel);
-  setFrameShadow(QFrame::Raised);
+  setFrameShape(QFrame::NoFrame);
+  setFrameShadow(QFrame::Plain);
   setAutoFillBackground(true);
+  setAttribute(Qt::WA_StyledBackground, true);
+#ifdef Q_OS_WIN
+  setProperty("platform", QStringLiteral("windows"));
+  auto* shadow = new QGraphicsDropShadowEffect(this);
+  shadow->setBlurRadius(24.0);
+  shadow->setOffset(0.0, 4.0);
+  shadow->setColor(QColor(0, 0, 0, 70));
+  setGraphicsEffect(shadow);
+#endif
 
   label_ = new QLabel(this);
+  label_->setObjectName("toastLabel");
   label_->setWordWrap(true);
   label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
   label_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
 
   actionButton_ = new QPushButton(this);
+  actionButton_->setObjectName("toastActionButton");
+  actionButton_->setAutoDefault(false);
+  actionButton_->setDefault(false);
   actionButton_->hide();
 
   closeButton_ = new QToolButton(this);
+  closeButton_->setObjectName("toastCloseButton");
   closeButton_->setIcon(style()->standardIcon(QStyle::SP_DialogCloseButton));
   closeButton_->setAutoRaise(true);
   closeButton_->setToolTip(tr("Dismiss"));
 
   auto* row = new QHBoxLayout(this);
-  row->setContentsMargins(10, 8, 10, 8);
+  row->setContentsMargins(12, 10, 12, 10);
   row->setSpacing(8);
   row->addWidget(label_, 1);
   row->addWidget(actionButton_);
@@ -95,8 +112,10 @@ void ToastWidget::reposition() {
   constexpr int kMargin = 12;
   const QRect r = p->contentsRect();
   QSize s = sizeHint();
-  // Keep a reasonable maximum width so long messages wrap.
-  s.setWidth(std::min(s.width(), 440));
+  const int availableWidth = std::max(260, r.width() - (kMargin * 2));
+  const int targetMaxWidth = std::min(520, availableWidth);
+  const int targetMinWidth = std::min(280, targetMaxWidth);
+  s.setWidth(std::max(targetMinWidth, std::min(s.width(), targetMaxWidth)));
   resize(s);
   move(r.right() - width() - kMargin, r.bottom() - height() - kMargin);
 }

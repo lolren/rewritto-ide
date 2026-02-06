@@ -22,6 +22,7 @@ class TestSerialMonitorWidget final : public QObject {
   void autoReconnectPersists();
   void emptySendEmitsLineEnding();
   void sendHistoryUpDownAndPersists();
+  void filterShowsMatchingLinesAndRestoresFullOutput();
 };
 
 void TestSerialMonitorWidget::timestampsPrefixesLines() {
@@ -212,6 +213,29 @@ void TestSerialMonitorWidget::sendHistoryUpDownAndPersists() {
     QTest::keyClick(input, Qt::Key_Up);
     QCOMPARE(input->text(), QString("first"));
   }
+}
+
+void TestSerialMonitorWidget::filterShowsMatchingLinesAndRestoresFullOutput() {
+  SerialMonitorWidget w;
+  w.resize(700, 320);
+  w.show();
+
+  auto* output = w.findChild<QPlainTextEdit*>("serialMonitorOutput");
+  QVERIFY(output);
+  auto* filter = w.findChild<QLineEdit*>("serialMonitorFilter");
+  QVERIFY(filter);
+
+  w.appendData(QByteArray("alpha\nbeta\ngamma\n"));
+  QCOMPARE(output->toPlainText(), QString("alpha\nbeta\ngamma\n"));
+
+  filter->setText("be");
+  QCOMPARE(output->toPlainText(), QString("beta"));
+
+  w.appendData(QByteArray("beacon\nzeta\n"));
+  QCOMPARE(output->toPlainText(), QString("beta\nbeacon"));
+
+  filter->clear();
+  QCOMPARE(output->toPlainText(), QString("alpha\nbeta\ngamma\nbeacon\nzeta\n"));
 }
 
 int main(int argc, char** argv) {
