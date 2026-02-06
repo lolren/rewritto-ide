@@ -197,6 +197,116 @@ bool sendLinuxDesktopNotification(const QString& summary,
 #endif
 }
 
+bool linuxNotifySendSupportsActions() {
+#if defined(Q_OS_LINUX)
+  static int cached = -1;
+  if (cached >= 0) {
+    return cached == 1;
+  }
+
+  static const QString notifySendPath =
+      QStandardPaths::findExecutable(QStringLiteral("notify-send"));
+  if (notifySendPath.isEmpty()) {
+    cached = 0;
+    return false;
+  }
+
+  QProcess helpProcess;
+  helpProcess.start(notifySendPath, {QStringLiteral("--help")});
+  if (!helpProcess.waitForFinished(500)) {
+    helpProcess.kill();
+    cached = 0;
+    return false;
+  }
+
+  const QString helpText =
+      QString::fromUtf8(helpProcess.readAllStandardOutput()) +
+      QString::fromUtf8(helpProcess.readAllStandardError());
+  cached = helpText.contains(QStringLiteral("--action")) ? 1 : 0;
+  return cached == 1;
+#else
+  return false;
+#endif
+}
+
+bool sendLinuxDesktopNotificationWithAction(QObject* owner,
+                                            const QString& summary,
+                                            const QString& body,
+                                            const QString& actionText,
+                                            std::function<void()> action,
+                                            int timeoutMs) {
+#if defined(Q_OS_LINUX)
+  if (!owner || actionText.trimmed().isEmpty() || !action ||
+      !linuxNotifySendSupportsActions()) {
+    return false;
+  }
+
+  static const QString notifySendPath =
+      QStandardPaths::findExecutable(QStringLiteral("notify-send"));
+  if (notifySendPath.isEmpty()) {
+    return false;
+  }
+
+  const QString cleanActionText = actionText.trimmed().remove(QLatin1Char('&'));
+
+  auto* process = new QProcess(owner);
+  QStringList args;
+  args << QStringLiteral("--app-name") << QStringLiteral("Rewritto IDE");
+  args << QStringLiteral("--icon") << QStringLiteral("applications-development");
+  if (timeoutMs >= 0) {
+    args << QStringLiteral("--expire-time") << QString::number(timeoutMs);
+  }
+  args << QStringLiteral("--action=rewritto-action=%1").arg(cleanActionText);
+  args << summary;
+  args << body;
+
+  process->start(notifySendPath, args);
+  if (!process->waitForStarted(200)) {
+    process->deleteLater();
+    return false;
+  }
+
+  // Early failure detection (e.g. bad flags or missing service) without blocking
+  // action-capable notifications, which wait for user interaction.
+  if (process->waitForFinished(100)) {
+    const bool ok = (process->exitStatus() == QProcess::NormalExit &&
+                     process->exitCode() == 0);
+    const QString selectedAction =
+        QString::fromUtf8(process->readAllStandardOutput()).trimmed();
+    process->deleteLater();
+    if (ok && selectedAction == QStringLiteral("rewritto-action") && action) {
+      action();
+    }
+    return ok;
+  }
+
+  QObject::connect(process, &QProcess::errorOccurred, process,
+                   [process](QProcess::ProcessError) { process->deleteLater(); });
+  QObject::connect(
+      process,
+      QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+      owner,
+      [process, action = std::move(action)](int exitCode, QProcess::ExitStatus) mutable {
+        const QString selectedAction =
+            QString::fromUtf8(process->readAllStandardOutput()).trimmed();
+        process->deleteLater();
+        if (exitCode == 0 && selectedAction == QStringLiteral("rewritto-action") &&
+            action) {
+          action();
+        }
+      });
+  return true;
+#else
+  Q_UNUSED(owner);
+  Q_UNUSED(summary);
+  Q_UNUSED(body);
+  Q_UNUSED(actionText);
+  Q_UNUSED(action);
+  Q_UNUSED(timeoutMs);
+  return false;
+#endif
+}
+
 bool isLikelyUf2VolumeName(QString name) {
   name = name.trimmed().toLower();
   if (name.isEmpty()) {
@@ -6071,17 +6181,29 @@ void MainWindow::showToastWithAction(const QString& message,
                                      const QString& actionText,
                                      std::function<void()> action,
                                      int timeoutMs) {
-  if (toast_ && !actionText.trimmed().isEmpty()) {
-    toast_->showToast(message, actionText, action, timeoutMs);
+  const QString trimmed = message.trimmed();
+  if (trimmed.isEmpty()) {
     return;
   }
 
-  if (toast_ && action) {
-    toast_->showToast(message, actionText, action, timeoutMs);
+  const QString summary = windowTitle().trimmed().isEmpty()
+                              ? QStringLiteral("Rewritto IDE")
+                              : windowTitle().trimmed();
+  if (sendLinuxDesktopNotificationWithAction(this,
+                                             summary,
+                                             trimmed,
+                                             actionText,
+                                             action,
+                                             timeoutMs)) {
+    return;
+  }
+  if (sendLinuxDesktopNotification(summary, trimmed, timeoutMs)) {
     return;
   }
 
-  showToast(message, timeoutMs);
+  if (toast_) {
+    toast_->showToast(trimmed, actionText, action, timeoutMs);
+  }
 }
 
 // === Sketch and Recent Files Management ===
