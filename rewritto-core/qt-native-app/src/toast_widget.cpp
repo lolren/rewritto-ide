@@ -40,7 +40,7 @@ ToastWidget::ToastWidget(QWidget* parent) : QFrame(parent) {
 
   closeButton_ = new QToolButton(this);
   closeButton_->setObjectName("toastCloseButton");
-  closeButton_->setIcon(style()->standardIcon(QStyle::SP_DialogCloseButton));
+  closeButton_->setIcon(style()->standardIcon(QStyle::SP_TitleBarCloseButton));
   closeButton_->setAutoRaise(true);
   closeButton_->setToolTip(tr("Dismiss"));
 

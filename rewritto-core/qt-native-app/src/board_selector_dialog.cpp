@@ -435,14 +435,18 @@ void BoardSelectorDialog::setCurrentFqbn(QString fqbn) {
     return;
   }
 
-  QModelIndex parent = proxyIdx.parent();
-  while (parent.isValid()) {
-    table_->expand(parent);
-    parent = parent.parent();
-  }
   const QModelIndex nameIndex = proxyIdx.sibling(proxyIdx.row(), kColName);
   table_->setCurrentIndex(nameIndex);
-  table_->scrollTo(nameIndex, QAbstractItemView::PositionAtCenter);
+  if (!filterEdit_ || filterEdit_->text().trimmed().isEmpty()) {
+    table_->collapseAll();
+  } else {
+    QModelIndex parent = proxyIdx.parent();
+    while (parent.isValid()) {
+      table_->expand(parent);
+      parent = parent.parent();
+    }
+    table_->scrollTo(nameIndex, QAbstractItemView::PositionAtCenter);
+  }
 }
 
 QString BoardSelectorDialog::selectedFqbn() const {
