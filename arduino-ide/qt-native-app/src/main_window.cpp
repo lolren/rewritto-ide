@@ -1160,8 +1160,6 @@ void MainWindow::createActions() {
   actionToggleBold_->setIconText(tr("B"));
   actionToggleBold_->setToolTip(tr("Bold"));
 
-  actionContextBuildMode_ = new QAction(tr("Build"), this);
-  actionContextBuildMode_->setCheckable(true);
   actionContextFontsMode_ = new QAction(tr("Fonts"), this);
   actionContextFontsMode_->setCheckable(true);
   actionContextSnapshotsMode_ = new QAction(tr("Snapshots"), this);
@@ -2135,8 +2133,6 @@ void MainWindow::createLayout() {
     return icon;
   };
 
-  actionContextBuildMode_->setIcon(themedModeIcon("applications-engineering", QStyle::SP_ComputerIcon));
-  actionContextBuildMode_->setToolTip(tr("Build Tools"));
   actionContextFontsMode_->setIcon(themedModeIcon("preferences-desktop-font", QStyle::SP_FileDialogDetailedView));
   actionContextFontsMode_->setToolTip(tr("Font Controls"));
   actionContextSnapshotsMode_->setIcon(themedModeIcon("camera-photo", QStyle::SP_DialogSaveButton));
@@ -2155,13 +2151,9 @@ void MainWindow::createLayout() {
   connect(actionSnapshotGallery_, &QAction::triggered, this,
           [this] { showCodeSnapshotsGallery(); });
 
-  contextModeToolBar_->addAction(actionContextBuildMode_);
   contextModeToolBar_->addAction(actionContextFontsMode_);
   contextModeToolBar_->addAction(actionContextSnapshotsMode_);
 
-  if (QWidget* widget = contextModeToolBar_->widgetForAction(actionContextBuildMode_)) {
-    widget->setObjectName("ContextModeBuildButton");
-  }
   if (QWidget* widget = contextModeToolBar_->widgetForAction(actionContextFontsMode_)) {
     widget->setObjectName("ContextModeFontsButton");
   }
@@ -2173,14 +2165,11 @@ void MainWindow::createLayout() {
 
   contextModeGroup_ = new QActionGroup(this);
   contextModeGroup_->setExclusive(true);
-  contextModeGroup_->addAction(actionContextBuildMode_);
   contextModeGroup_->addAction(actionContextFontsMode_);
   contextModeGroup_->addAction(actionContextSnapshotsMode_);
   connect(contextModeGroup_, &QActionGroup::triggered, this,
           [this](QAction* action) {
-            if (action == actionContextBuildMode_) {
-              setContextToolbarMode(ContextToolbarMode::Build);
-            } else if (action == actionContextFontsMode_) {
+            if (action == actionContextFontsMode_) {
               setContextToolbarMode(ContextToolbarMode::Fonts);
             } else if (action == actionContextSnapshotsMode_) {
               setContextToolbarMode(ContextToolbarMode::Snapshots);
@@ -6351,7 +6340,6 @@ void MainWindow::restyleContextModeToolBar() {
   const QColor borderColor = pal.color(QPalette::Mid);
   const bool darkTheme = panelColor.lightnessF() < 0.5;
 
-  const QColor buildAccent = QColor(QStringLiteral("#f59e0b"));
   const QColor fontsAccent = QColor(QStringLiteral("#38bdf8"));
   const QColor snapshotsAccent = QColor(QStringLiteral("#22c55e"));
 
@@ -6361,13 +6349,11 @@ void MainWindow::restyleContextModeToolBar() {
       borderColor, pal.color(QPalette::Highlight), darkTheme ? 0.35 : 0.18);
   const QColor hoverBackground =
       blendColors(barBackground, textColor, darkTheme ? 0.14 : 0.08);
-  const QColor buildChecked =
-      blendColors(barBackground, buildAccent, darkTheme ? 0.55 : 0.34);
   const QColor fontsChecked =
       blendColors(barBackground, fontsAccent, darkTheme ? 0.55 : 0.34);
   const QColor snapshotsChecked =
       blendColors(barBackground, snapshotsAccent, darkTheme ? 0.55 : 0.34);
-  const QColor checkedText = readableForeground(buildChecked);
+  const QColor checkedText = readableForeground(fontsChecked);
 
   contextModeToolBar_->setStyleSheet(QString(
       "QToolBar#ContextModeBar {"
@@ -6389,31 +6375,23 @@ void MainWindow::restyleContextModeToolBar() {
       "QToolBar#ContextModeBar QToolButton:hover {"
       "  background-color: %4;"
       "}"
-      "QToolBar#ContextModeBar QToolButton#ContextModeBuildButton {"
+      "QToolBar#ContextModeBar QToolButton#ContextModeFontsButton {"
       "  border-right: 3px solid %5;"
       "}"
-      "QToolBar#ContextModeBar QToolButton#ContextModeFontsButton {"
+      "QToolBar#ContextModeBar QToolButton#ContextModeSnapshotsButton {"
       "  border-right: 3px solid %6;"
       "}"
-      "QToolBar#ContextModeBar QToolButton#ContextModeSnapshotsButton {"
-      "  border-right: 3px solid %7;"
-      "}"
-      "QToolBar#ContextModeBar QToolButton#ContextModeBuildButton:checked {"
-      "  background-color: %8;"
-      "  color: %11;"
-      "}"
       "QToolBar#ContextModeBar QToolButton#ContextModeFontsButton:checked {"
-      "  background-color: %9;"
-      "  color: %11;"
+      "  background-color: %7;"
+      "  color: %9;"
       "}"
       "QToolBar#ContextModeBar QToolButton#ContextModeSnapshotsButton:checked {"
-      "  background-color: %10;"
-      "  color: %11;"
+      "  background-color: %8;"
+      "  color: %9;"
       "}")
       .arg(colorHex(barBackground), colorHex(barBorder), colorHex(textColor),
-           colorHex(hoverBackground), colorHex(buildAccent), colorHex(fontsAccent),
-           colorHex(snapshotsAccent), colorHex(buildChecked), colorHex(fontsChecked),
-           colorHex(snapshotsChecked), colorHex(checkedText)));
+           colorHex(hoverBackground), colorHex(fontsAccent), colorHex(snapshotsAccent),
+           colorHex(fontsChecked), colorHex(snapshotsChecked), colorHex(checkedText)));
 }
 
 void MainWindow::syncContextModeSelection(bool contextVisible) {
@@ -6424,7 +6402,6 @@ void MainWindow::syncContextModeSelection(bool contextVisible) {
   if (!contextVisible) {
     const bool wasExclusive = contextModeGroup_->isExclusive();
     contextModeGroup_->setExclusive(false);
-    if (actionContextBuildMode_) actionContextBuildMode_->setChecked(false);
     if (actionContextFontsMode_) actionContextFontsMode_->setChecked(false);
     if (actionContextSnapshotsMode_) actionContextSnapshotsMode_->setChecked(false);
     contextModeGroup_->setExclusive(wasExclusive);
@@ -6432,7 +6409,6 @@ void MainWindow::syncContextModeSelection(bool contextVisible) {
   }
 
   const bool hasCheckedAction =
-      (actionContextBuildMode_ && actionContextBuildMode_->isChecked()) ||
       (actionContextFontsMode_ && actionContextFontsMode_->isChecked()) ||
       (actionContextSnapshotsMode_ && actionContextSnapshotsMode_->isChecked());
   if (hasCheckedAction) {
@@ -6441,9 +6417,6 @@ void MainWindow::syncContextModeSelection(bool contextVisible) {
 
   QAction* modeAction = nullptr;
   switch (contextToolbarMode_) {
-    case ContextToolbarMode::Build:
-      modeAction = actionContextBuildMode_;
-      break;
     case ContextToolbarMode::Fonts:
       modeAction = actionContextFontsMode_;
       break;
@@ -6490,10 +6463,6 @@ void MainWindow::rebuildContextToolbar() {
     return;
   }
 
-  if (actionContextBuildMode_) {
-    const QSignalBlocker blocker(actionContextBuildMode_);
-    actionContextBuildMode_->setChecked(contextToolbarMode_ == ContextToolbarMode::Build);
-  }
   if (actionContextFontsMode_) {
     const QSignalBlocker blocker(actionContextFontsMode_);
     actionContextFontsMode_->setChecked(contextToolbarMode_ == ContextToolbarMode::Fonts);
@@ -6518,10 +6487,6 @@ void MainWindow::rebuildContextToolbar() {
   QColor modeAccent;
   QString title;
   switch (contextToolbarMode_) {
-    case ContextToolbarMode::Build:
-      title = tr("Build");
-      modeAccent = QColor(QStringLiteral("#f59e0b"));
-      break;
     case ContextToolbarMode::Fonts:
       title = tr("Fonts");
       modeAccent = QColor(QStringLiteral("#38bdf8"));
@@ -6600,24 +6565,7 @@ void MainWindow::rebuildContextToolbar() {
   fontToolBar_->addWidget(titleLabel);
   fontToolBar_->addSeparator();
 
-  if (contextToolbarMode_ == ContextToolbarMode::Build) {
-    if (actionRefreshBoards_ && actionRefreshBoards_->icon().isNull()) {
-      actionRefreshBoards_->setIcon(
-          QIcon::fromTheme("view-refresh", style()->standardIcon(QStyle::SP_BrowserReload)));
-    }
-    if (actionRefreshPorts_ && actionRefreshPorts_->icon().isNull()) {
-      actionRefreshPorts_->setIcon(
-          QIcon::fromTheme("view-refresh", style()->standardIcon(QStyle::SP_BrowserReload)));
-    }
-
-    fontToolBar_->addAction(actionVerify_);
-    fontToolBar_->addAction(actionUpload_);
-    fontToolBar_->addAction(actionJustUpload_);
-    fontToolBar_->addAction(actionStop_);
-    fontToolBar_->addSeparator();
-    fontToolBar_->addAction(actionRefreshBoards_);
-    fontToolBar_->addAction(actionRefreshPorts_);
-  } else if (contextToolbarMode_ == ContextToolbarMode::Fonts) {
+  if (contextToolbarMode_ == ContextToolbarMode::Fonts) {
     fontFamilyCombo_ = new QComboBox(fontToolBar_);
     fontFamilyCombo_->setEditable(false);
     fontFamilyCombo_->setInsertPolicy(QComboBox::NoInsert);

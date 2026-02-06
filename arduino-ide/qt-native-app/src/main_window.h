@@ -89,7 +89,6 @@ class MainWindow final : public QMainWindow {
   };
 
   enum class ContextToolbarMode {
-    Build,
     Fonts,
     Snapshots,
   };
@@ -141,10 +140,9 @@ class MainWindow final : public QMainWindow {
   QComboBox* portCombo_ = nullptr;
   QComboBox* fontFamilyCombo_ = nullptr;
   QComboBox* fontSizeCombo_ = nullptr;
-  ContextToolbarMode contextToolbarMode_ = ContextToolbarMode::Build;
+  ContextToolbarMode contextToolbarMode_ = ContextToolbarMode::Fonts;
   QAction* actionToggleBold_ = nullptr;
   QAction* actionToggleFontToolBar_ = nullptr;
-  QAction* actionContextBuildMode_ = nullptr;
   QAction* actionContextFontsMode_ = nullptr;
   QAction* actionContextSnapshotsMode_ = nullptr;
   QActionGroup* contextModeGroup_ = nullptr;
