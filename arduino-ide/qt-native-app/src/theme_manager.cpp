@@ -346,6 +346,8 @@ QString buildStyleSheet(const ThemeSpec& t) {
 
     QMenuBar {
         background-color: %7;
+        background-image: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                          stop:0 %7, stop:1 %4);
         color: %8;
         border: none;
         border-bottom: 1px solid %6;
@@ -369,6 +371,8 @@ QString buildStyleSheet(const ThemeSpec& t) {
 
     QToolBar#HeaderToolBar {
         background-color: %7;
+        background-image: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                          stop:0 %7, stop:1 %4);
         border: none;
         border-bottom: 1px solid %6;
         padding: 6px 8px;
@@ -620,6 +624,8 @@ QString buildStyleSheet(const ThemeSpec& t) {
 
     QStatusBar {
         background-color: %7;
+        background-image: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                          stop:0 %7, stop:1 %4);
         color: %8;
         border: none;
         border-top: 1px solid rgba(255, 255, 255, 0.10);
@@ -706,6 +712,11 @@ QString buildStyleSheet(const ThemeSpec& t) {
         font-weight: 500;
     }
 
+    QPushButton:focus {
+        border: 2px solid %8;
+        padding: 5px 15px;
+    }
+
     QPushButton:hover {
         background-color: %7;
     }
@@ -755,6 +766,7 @@ QString buildStyleSheet(const ThemeSpec& t) {
 
     QMenu::item:disabled {
         color: %14;
+        background-color: transparent;
     }
 
     QMenu::separator {

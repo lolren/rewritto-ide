@@ -100,6 +100,7 @@
 #include <QTreeView>
 #include <QTreeWidget>
 #include <QTextBlock>
+#include <QTextDocument>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -1678,8 +1679,7 @@ void MainWindow::createMenus() {
   });
 
   connect(actionUploadSSL_, &QAction::triggered, this, [this] {
-    QMessageBox::information(this, tr("Upload SSL Root Certificates"),
-                             tr("The Upload SSL Root Certificates tool will be implemented in a future version."));
+    uploadSslRootCertificates();
   });
 
   // Programmer selection
@@ -3158,6 +3158,16 @@ void MainWindow::rebuildPortMenu() {
         showToast(tr("Detected board selected"));
       });
     }
+    const QString activePort = currentPort().trimmed();
+    QAction* copyPortAddress = portMenu_->addAction(tr("Copy Port Address"));
+    copyPortAddress->setEnabled(!activePort.isEmpty());
+    connect(copyPortAddress, &QAction::triggered, this, [this, activePort] {
+      if (activePort.isEmpty()) {
+        return;
+      }
+      QGuiApplication::clipboard()->setText(activePort);
+      showToast(tr("Port address copied"));
+    });
     portMenu_->addSeparator();
   }
 
@@ -3350,6 +3360,7 @@ void MainWindow::refreshBoardOptions() {
           QSettings settings;
           settings.beginGroup("BoardOptions");
           settings.beginGroup(baseFqbn);
+          bool settingsChanged = false;
 
           for (const QJsonValue& optVal : options) {
               const QJsonObject opt = optVal.toObject();
@@ -3357,23 +3368,38 @@ void MainWindow::refreshBoardOptions() {
               const QString optLabel = opt.value("option_label").toString();
               const QJsonArray values = opt.value("values").toArray();
 
-              if (values.isEmpty()) continue;
+              if (optId.trimmed().isEmpty() || values.isEmpty()) continue;
 
               QMenu* subMenu = new QMenu(optLabel, toolsMenu_);
               QAction* subMenuAction = toolsMenu_->insertMenu(programmerMenuAction_, subMenu);
               boardOptionMenuActions_.append(subMenuAction);
+              auto* valueGroup = new QActionGroup(subMenu);
+              valueGroup->setExclusive(true);
 
               const QString currentSelectedValue = settings.value(optId).toString();
               bool foundSelected = false;
+              QString defaultValueId;
+              QString firstValueId;
 
               for (const QJsonValue& valVal : values) {
                   const QJsonObject val = valVal.toObject();
                   const QString valId = val.value("value").toString();
                   const QString valLabel = val.value("value_label").toString();
                   const bool isDefault = val.value("selected").toBool();
+                  if (valId.trimmed().isEmpty()) {
+                      continue;
+                  }
+                  if (firstValueId.isEmpty()) {
+                      firstValueId = valId;
+                  }
+                  if (isDefault && defaultValueId.isEmpty()) {
+                      defaultValueId = valId;
+                  }
 
                   QAction* act = subMenu->addAction(valLabel);
                   act->setCheckable(true);
+                  act->setData(valId);
+                  valueGroup->addAction(act);
                   
                   bool isChecked = false;
                   if (!currentSelectedValue.isEmpty()) {
@@ -3390,12 +3416,32 @@ void MainWindow::refreshBoardOptions() {
               }
               
               // If nothing was checked by settings or defaults, check first
-              if (!foundSelected && !subMenu->actions().isEmpty()) {
-                  subMenu->actions().first()->setChecked(true);
+              if (!foundSelected) {
+                  QString fallbackValue = defaultValueId;
+                  if (fallbackValue.isEmpty()) {
+                      fallbackValue = firstValueId;
+                  }
+                  if (!fallbackValue.isEmpty()) {
+                      settings.setValue(optId, fallbackValue);
+                      settingsChanged = true;
+                      const QList<QAction*> actions = subMenu->actions();
+                      for (QAction* action : actions) {
+                          if (!action) continue;
+                          if (action->isChecked()) {
+                              action->setChecked(false);
+                          }
+                          if (action->data().toString() == fallbackValue) {
+                              action->setChecked(true);
+                          }
+                      }
+                  }
               }
           }
           settings.endGroup();
           settings.endGroup();
+          if (settingsChanged) {
+              updateBoardPortIndicator();
+          }
       }
     }
     p->deleteLater();
@@ -3426,9 +3472,6 @@ void MainWindow::setBoardOption(const QString& optionId, const QString& valueId)
     settings.endGroup();
     settings.endGroup();
 
-    // Rebuild full FQBN
-    // We need to fetch all options for this board to compose the full FQBN
-    // For now, we'll just refresh the menu. The compile command will need to compose it.
     refreshBoardOptions();
     updateBoardPortIndicator();
 }
@@ -4679,13 +4722,8 @@ void MainWindow::toggleSerialPlotter() {
 }
 
 void MainWindow::getBoardInfo() {
-  if (currentFqbn().isEmpty()) {
-    QMessageBox::warning(this, tr("No Board Selected"),
-                         tr("Please select a board first."));
-    return;
-  }
-
-  if (currentPort().isEmpty()) {
+  const QString selectedPort = currentPort().trimmed();
+  if (selectedPort.isEmpty()) {
     QMessageBox::warning(this, tr("No Port Selected"),
                          tr("Please select a port first."));
     return;
@@ -4698,19 +4736,109 @@ void MainWindow::getBoardInfo() {
 
   if (!arduinoCli_) return;
 
-  output_->clear();
-  output_->appendLine(tr("Getting board info..."));
+  auto* p = new QProcess(this);
+  connect(p, &QProcess::finished, this,
+          [this, p, selectedPort](int exitCode, QProcess::ExitStatus) {
+            const QString stderrText =
+                QString::fromUtf8(p->readAllStandardError()).trimmed();
+            const QByteArray stdoutData = p->readAllStandardOutput();
+            p->deleteLater();
 
-  arduinoCli_->run({"board", "details", "--fqbn", currentFqbn()});
+            if (exitCode != 0) {
+              QMessageBox::warning(
+                  this, tr("Board Info"),
+                  tr("Could not retrieve board information.\n\n%1")
+                      .arg(stderrText.isEmpty() ? tr("arduino-cli failed.") : stderrText));
+              return;
+            }
 
-  connect(arduinoCli_, &ArduinoCli::finished, this, [this](int exitCode, QProcess::ExitStatus) {
-    if (exitCode == 0) {
-      output_->appendLine(tr("Board info retrieved successfully."));
-    } else {
-      output_->appendLine(tr("Failed to get board info."));
-    }
-    disconnect(arduinoCli_, &ArduinoCli::finished, this, nullptr);
-  }, Qt::SingleShotConnection);
+            const QJsonDocument doc = QJsonDocument::fromJson(stdoutData);
+            QJsonArray ports;
+            if (doc.isObject()) {
+              ports = doc.object().value("detected_ports").toArray();
+            } else if (doc.isArray()) {
+              ports = doc.array();
+            }
+
+            QJsonObject match;
+            for (const QJsonValue& value : ports) {
+              const QJsonObject obj = value.toObject();
+              const QJsonObject portObj = obj.value("port").toObject();
+              const QString address = portObj.value("address").toString().trimmed();
+              if (!address.isEmpty() && address == selectedPort) {
+                match = obj;
+                break;
+              }
+            }
+
+            if (match.isEmpty()) {
+              QMessageBox::information(
+                  this, tr("Board Info"),
+                  tr("No detailed board metadata is currently available for %1.")
+                      .arg(selectedPort));
+              return;
+            }
+
+            const QJsonObject portObj = match.value("port").toObject();
+            const QString address = portObj.value("address").toString().trimmed();
+            const QString protocol =
+                portObj.value("protocol_label").toString().trimmed().isEmpty()
+                    ? portObj.value("protocol").toString().trimmed()
+                    : portObj.value("protocol_label").toString().trimmed();
+
+            const QJsonArray boards = match.value("boards").toArray();
+            QString boardName;
+            QString boardFqbn;
+            if (!boards.isEmpty()) {
+              const QJsonObject board = boards.first().toObject();
+              boardName = board.value("name").toString().trimmed();
+              boardFqbn = board.value("fqbn").toString().trimmed();
+            }
+
+            if (boardName.isEmpty() && boardCombo_) {
+              boardName = boardCombo_->currentText().trimmed();
+            }
+            if (boardFqbn.isEmpty()) {
+              boardFqbn = currentFqbn().trimmed();
+            }
+
+            QStringList idProps;
+            const QJsonObject idObj =
+                match.value("matching_identification_properties").toObject();
+            for (auto it = idObj.constBegin(); it != idObj.constEnd(); ++it) {
+              const QString key = it.key().trimmed();
+              const QString val = it.value().toString().trimmed();
+              if (!key.isEmpty() && !val.isEmpty()) {
+                idProps << QStringLiteral("%1: %2")
+                               .arg(key.toHtmlEscaped(), val.toHtmlEscaped());
+              }
+            }
+            idProps.sort(Qt::CaseInsensitive);
+
+            QString details =
+                tr("<b>Port:</b> %1<br><b>Protocol:</b> %2<br>"
+                   "<b>Board:</b> %3<br><b>FQBN:</b> %4")
+                    .arg(address.toHtmlEscaped().isEmpty() ? tr("(unknown)") : address.toHtmlEscaped(),
+                         protocol.toHtmlEscaped().isEmpty() ? tr("(unknown)") : protocol.toHtmlEscaped(),
+                         boardName.toHtmlEscaped().isEmpty() ? tr("(unknown)") : boardName.toHtmlEscaped(),
+                         boardFqbn.toHtmlEscaped().isEmpty() ? tr("(unknown)") : boardFqbn.toHtmlEscaped());
+
+            if (!idProps.isEmpty()) {
+              details += tr("<br><br><b>Identification Properties</b><br>%1")
+                             .arg(idProps.join(QStringLiteral("<br>")));
+            }
+
+            QMessageBox box(this);
+            box.setWindowTitle(tr("Board Info"));
+            box.setIcon(QMessageBox::Information);
+            box.setTextFormat(Qt::RichText);
+            box.setText(details);
+            box.exec();
+          });
+
+  const QStringList args =
+      arduinoCli_->withGlobalFlags({"board", "list", "--format", "json"});
+  p->start(arduinoCli_->arduinoCliPath(), args);
 }
 
 void MainWindow::burnBootloader() {
@@ -4773,18 +4901,22 @@ void MainWindow::burnBootloader() {
 
 // === Help Menu Actions ===
 void MainWindow::showAbout() {
+  const QString appVersion =
+      QCoreApplication::applicationVersion().trimmed().isEmpty()
+          ? QStringLiteral("0.2.0")
+          : QCoreApplication::applicationVersion().trimmed();
   QMessageBox::about(
       this,
       tr("About Rewritto Ide"),
       tr("<h3>Rewritto Ide (Qt Native)</h3>"
           "<p>A native Qt port of the Arduino IDE 2.x</p>"
-          "<p><b>Version:</b> 0.1.0-alpha</p>"
-          "<p><b>Qt Version:</b> %1</p>"
+          "<p><b>Version:</b> %1</p>"
+          "<p><b>Qt Version:</b> %2</p>"
           "<p>This is a modern, Qt-based implementation of the Arduino IDE with "
           "feature parity to Arduino IDE 2.x, built with native Qt Widgets.</p>"
           "<p>License: AGPL-3.0</p>"
           "<p>Based on the original Arduino IDE 2.x (Eclipse Theia based)</p>"
-          ).arg(qVersion()));
+          ).arg(appVersion, qVersion()));
 }
 
 void MainWindow::updateWindowTitleForFile(const QString& filePath) {
@@ -4802,42 +4934,69 @@ void MainWindow::updateWindowTitleForFile(const QString& filePath) {
 void MainWindow::autoFormatSketch() {
   if (!editor_) return;
 
-  // Simple auto-format implementation
-  // In production, this should use a proper formatter (clang-format, astyle, etc.)
-  if (auto* ed = qobject_cast<CodeEditor*>(editor_->currentEditorWidget())) {
-    QTextCursor cursor(ed->document());
-    cursor.beginEditBlock();
-
-    // Basic formatting: remove trailing whitespace and normalize line endings
-    for (int i = 0; i < ed->document()->blockCount(); ++i) {
-      QTextBlock block = ed->document()->findBlockByNumber(i);
-      QString text = block.text();
-      QString trimmed = text.trimmed();
-      if (!trimmed.isEmpty()) {
-        cursor.setPosition(block.position());
-        cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
-        cursor.insertText(trimmed);
-      }
-    }
-
-    cursor.endEditBlock();
-    ed->document()->setModified(true);
+  auto* codeEditor = qobject_cast<CodeEditor*>(editor_->currentEditorWidget());
+  if (!codeEditor || !codeEditor->document()) {
+    return;
   }
 
-  output_->appendLine(tr("Auto format applied (basic formatting)"));
+  QTextDocument* document = codeEditor->document();
+  QTextCursor cursor(document);
+  cursor.beginEditBlock();
+
+  bool changed = false;
+  for (QTextBlock block = document->begin(); block.isValid();
+       block = block.next()) {
+    const QString original = block.text();
+    int keep = original.size();
+    while (keep > 0) {
+      const QChar c = original.at(keep - 1);
+      if (c == QLatin1Char(' ') || c == QLatin1Char('\t')) {
+        --keep;
+      } else {
+        break;
+      }
+    }
+    if (keep == original.size()) {
+      continue;
+    }
+    const QString trimmedRight = original.left(keep);
+    cursor.setPosition(block.position());
+    cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+    cursor.insertText(trimmedRight);
+    changed = true;
+  }
+
+  QString allText = document->toPlainText();
+  if (!allText.isEmpty() && !allText.endsWith(QLatin1Char('\n'))) {
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertText(QStringLiteral("\n"));
+    changed = true;
+  }
+
+  cursor.endEditBlock();
+  if (changed) {
+    document->setModified(true);
+    showToast(tr("Auto format applied"));
+    if (output_) {
+      output_->appendLine(tr("Auto format applied."));
+    }
+  } else {
+    showToast(tr("No formatting changes needed"));
+  }
 }
 
 void MainWindow::archiveSketch() {
-  const QString currentPath = editor_ ? editor_->currentFilePath() : QString{};
-  if (currentPath.isEmpty()) {
+  const QString sketchDir = currentSketchFolderPath();
+  if (sketchDir.isEmpty()) {
     QMessageBox::warning(this, tr("No Sketch Open"),
                          tr("Please open or create a sketch first."));
     return;
   }
 
-  const QFileInfo info(currentPath);
-  const QString sketchDir = info.absolutePath();
-  const QString sketchName = info.completeBaseName();
+  const QFileInfo info(sketchDir);
+  const QString sketchName = info.fileName().trimmed().isEmpty()
+                                 ? QStringLiteral("sketch")
+                                 : info.fileName().trimmed();
 
   const QString zipPath = QFileDialog::getSaveFileName(
       this,
@@ -4849,7 +5008,7 @@ void MainWindow::archiveSketch() {
     // Create zip archive
     if (!createZipArchive(sketchDir, zipPath)) {
       QMessageBox::warning(this, tr("Archive Failed"),
-                           tr("Could not create zip archive."));
+                           tr("Could not create zip archive.\n\nPlease ensure the `zip` command is installed."));
     } else {
       QMessageBox::information(this, tr("Archive Complete"),
                                tr("Sketch archived to: %1").arg(zipPath));
@@ -4858,9 +5017,75 @@ void MainWindow::archiveSketch() {
 }
 
 void MainWindow::showWiFiFirmwareUpdater() {
-  QMessageBox::information(this, tr("WiFi Firmware Updater"),
-                           tr("The WiFi Firmware Updater tool will be implemented in a future version.\n\n"
-                              "This tool updates the firmware on WiFi101 and WiFiNINA modules."));
+  const QString port = currentPort().trimmed();
+  if (port.isEmpty()) {
+    QMessageBox::warning(this, tr("No Port Selected"),
+                         tr("Please select a port first."));
+    return;
+  }
+  if (currentPortIsMissing()) {
+    QMessageBox::warning(this, tr("Port Not Available"),
+                         tr("The selected port is not available. Please select a connected port."));
+    return;
+  }
+
+  const QString boardName =
+      boardCombo_ ? boardCombo_->currentText().trimmed() : QString{};
+  QMessageBox box(this);
+  box.setWindowTitle(tr("WiFi Firmware Updater"));
+  box.setIcon(QMessageBox::Information);
+  box.setTextFormat(Qt::RichText);
+  box.setText(
+      tr("<b>Firmware Updater</b><br><br>"
+         "Selected board: %1<br>"
+         "Selected port: %2<br><br>"
+         "Use the official updater guide for WiFiNINA / WiFi101 modules.")
+          .arg(boardName.toHtmlEscaped().isEmpty() ? tr("(unknown)") : boardName.toHtmlEscaped(),
+               port.toHtmlEscaped()));
+  QPushButton* openGuide =
+      box.addButton(tr("Open Guide"), QMessageBox::AcceptRole);
+  box.addButton(QMessageBox::Close);
+  box.exec();
+  if (box.clickedButton() == openGuide) {
+    QDesktopServices::openUrl(
+        QUrl(QStringLiteral("https://support.arduino.cc/hc/en-us/articles/4403365234322")));
+  }
+}
+
+void MainWindow::uploadSslRootCertificates() {
+  const QString port = currentPort().trimmed();
+  if (port.isEmpty()) {
+    QMessageBox::warning(this, tr("No Port Selected"),
+                         tr("Please select a port first."));
+    return;
+  }
+  if (currentPortIsMissing()) {
+    QMessageBox::warning(this, tr("Port Not Available"),
+                         tr("The selected port is not available. Please select a connected port."));
+    return;
+  }
+
+  const QString boardName =
+      boardCombo_ ? boardCombo_->currentText().trimmed() : QString{};
+  QMessageBox box(this);
+  box.setWindowTitle(tr("Upload SSL Root Certificates"));
+  box.setIcon(QMessageBox::Information);
+  box.setTextFormat(Qt::RichText);
+  box.setText(
+      tr("<b>Upload SSL Root Certificates</b><br><br>"
+         "Selected board: %1<br>"
+         "Selected port: %2<br><br>"
+         "Use the official Arduino workflow to download and upload root certificates.")
+          .arg(boardName.toHtmlEscaped().isEmpty() ? tr("(unknown)") : boardName.toHtmlEscaped(),
+               port.toHtmlEscaped()));
+  QPushButton* openGuide =
+      box.addButton(tr("Open Guide"), QMessageBox::AcceptRole);
+  box.addButton(QMessageBox::Close);
+  box.exec();
+  if (box.clickedButton() == openGuide) {
+    QDesktopServices::openUrl(
+        QUrl(QStringLiteral("https://www.arduino.cc/en/Tutorial/WiFiNINAFirmwareUpdater/")));
+  }
 }
 
 void MainWindow::setProgrammer(const QString& programmer) {
@@ -4935,10 +5160,20 @@ void MainWindow::stopDebugging() {
 
 // === Helper Functions ===
 bool MainWindow::createZipArchive(const QString& sourceDir, const QString& zipPath) {
-  // Simple implementation using QProcess with zip command
-  // In production, this should use a proper zip library
+  const QFileInfo sourceInfo(sourceDir);
+  if (!sourceInfo.exists() || !sourceInfo.isDir()) {
+    return false;
+  }
+  const QFileInfo targetInfo(zipPath);
+  if (targetInfo.absolutePath().trimmed().isEmpty()) {
+    return false;
+  }
+  QDir().mkpath(targetInfo.absolutePath());
+  QFile::remove(zipPath);
+
   QProcess zipProcess(this);
-  zipProcess.start("zip", {"-r", zipPath, sourceDir + "/*"});
+  zipProcess.setWorkingDirectory(sourceInfo.absoluteDir().absolutePath());
+  zipProcess.start("zip", {"-rq", zipPath, sourceInfo.fileName()});
   if (!zipProcess.waitForStarted(1000)) {
     return false;
   }
@@ -4946,7 +5181,7 @@ bool MainWindow::createZipArchive(const QString& sourceDir, const QString& zipPa
     zipProcess.kill();
     return false;
   }
-  return zipProcess.exitCode() == 0;
+  return zipProcess.exitCode() == 0 && QFileInfo::exists(zipPath);
 }
 
 void MainWindow::showToast(const QString& message, int timeoutMs) {

@@ -199,7 +199,7 @@ PreferencesDialog::PreferencesDialog(QWidget* parent) : QDialog(parent) {
   noProxyHostsEdit_->setMinimumHeight(80);
 
   testConnectionButton_ = new QPushButton(tr("Test Connection"), this);
-  testConnectionButton_->setEnabled(false);
+  testConnectionButton_->setEnabled(true);
   connect(testConnectionButton_, &QPushButton::clicked, this, [this]() {
     const QString type = proxyType();
     const QString host = proxyHost();
@@ -254,11 +254,7 @@ PreferencesDialog::PreferencesDialog(QWidget* parent) : QDialog(parent) {
 
               if (buttonGuard) {
                 buttonGuard->setText(originalButtonText);
-                const bool hasProxy =
-                    proxyTypeCombo_ &&
-                    proxyTypeCombo_->currentData().toString() !=
-                        QStringLiteral("none");
-                buttonGuard->setEnabled(hasProxy);
+                buttonGuard->setEnabled(true);
               }
 
               if (success) {
@@ -289,7 +285,7 @@ PreferencesDialog::PreferencesDialog(QWidget* parent) : QDialog(parent) {
             proxyPortSpin_->setEnabled(hasProxy);
             proxyUsernameEdit_->setEnabled(hasProxy);
             proxyPasswordEdit_->setEnabled(hasProxy);
-            testConnectionButton_->setEnabled(hasProxy);
+            testConnectionButton_->setEnabled(true);
           });
 
   auto* networkForm = new QFormLayout();

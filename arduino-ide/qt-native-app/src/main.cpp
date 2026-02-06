@@ -84,6 +84,7 @@ int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
   QApplication::setApplicationName(kBrandApp);
   QApplication::setOrganizationName(kBrandOrg);
+  QApplication::setApplicationVersion(QStringLiteral("0.2.0"));
 
   migrateLegacySettingsIfNeeded();
 

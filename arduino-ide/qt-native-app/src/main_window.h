@@ -437,6 +437,7 @@ class MainWindow final : public QMainWindow {
   void autoFormatSketch();
   void archiveSketch();
   void showWiFiFirmwareUpdater();
+  void uploadSslRootCertificates();
   void setProgrammer(const QString& programmer);
   void setBoardOption(const QString& optionId, const QString& valueId);
 
