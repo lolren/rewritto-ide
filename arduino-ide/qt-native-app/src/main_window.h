@@ -87,6 +87,12 @@ class MainWindow final : public QMainWindow {
     Plotter,
   };
 
+  enum class ContextToolbarMode {
+    Build,
+    Fonts,
+    Snapshots,
+  };
+
   SketchManager* sketchManager_ = nullptr;
   ArduinoCli* arduinoCli_ = nullptr;
 
@@ -129,12 +135,20 @@ class MainWindow final : public QMainWindow {
   QToolBar* buildToolBar_ = nullptr;
   QToolBar* sideBarToolBar_ = nullptr;
   QToolBar* fontToolBar_ = nullptr;
+  QToolBar* contextModeToolBar_ = nullptr;
   QComboBox* boardCombo_ = nullptr;
   QComboBox* portCombo_ = nullptr;
   QComboBox* fontFamilyCombo_ = nullptr;
   QComboBox* fontSizeCombo_ = nullptr;
+  ContextToolbarMode contextToolbarMode_ = ContextToolbarMode::Build;
   QAction* actionToggleBold_ = nullptr;
   QAction* actionToggleFontToolBar_ = nullptr;
+  QAction* actionContextBuildMode_ = nullptr;
+  QAction* actionContextFontsMode_ = nullptr;
+  QAction* actionContextSnapshotsMode_ = nullptr;
+  QAction* actionSnapshotCapture_ = nullptr;
+  QAction* actionSnapshotCompare_ = nullptr;
+  QAction* actionSnapshotGallery_ = nullptr;
   QAction* actionRefreshBoards_ = nullptr;
   QAction* actionRefreshPorts_ = nullptr;
   QAction* actionSelectBoard_ = nullptr;
@@ -336,6 +350,8 @@ class MainWindow final : public QMainWindow {
   void createMenus();
   void createLayout();
   void updateFontFromToolbar();
+  void setContextToolbarMode(ContextToolbarMode mode);
+  void rebuildContextToolbar();
   void wireSignals();
   void rebuildRecentSketchesMenu();
   void rebuildExamplesMenu();

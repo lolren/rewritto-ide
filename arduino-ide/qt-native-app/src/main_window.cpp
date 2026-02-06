@@ -58,6 +58,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMap>
@@ -957,12 +958,24 @@ void MainWindow::createActions() {
   actionLibraryManager_ = new QAction(tr("Library Manager\u2026"), this);
   actionLibraryManager_->setCheckable(true);
 
-  actionToggleFontToolBar_ = new QAction(tr("Font Toolbar"), this);
+  actionToggleFontToolBar_ = new QAction(tr("Context Toolbar"), this);
   actionToggleFontToolBar_->setCheckable(true);
+  actionToggleFontToolBar_->setChecked(true);
 
   actionToggleBold_ = new QAction(tr("Bold"), this);
   actionToggleBold_->setCheckable(true);
   actionToggleBold_->setIcon(QIcon::fromTheme("format-text-bold"));
+
+  actionContextBuildMode_ = new QAction(tr("Build"), this);
+  actionContextBuildMode_->setCheckable(true);
+  actionContextFontsMode_ = new QAction(tr("Fonts"), this);
+  actionContextFontsMode_->setCheckable(true);
+  actionContextSnapshotsMode_ = new QAction(tr("Snapshots"), this);
+  actionContextSnapshotsMode_->setCheckable(true);
+
+  actionSnapshotCapture_ = new QAction(tr("Capture"), this);
+  actionSnapshotCompare_ = new QAction(tr("Compare"), this);
+  actionSnapshotGallery_ = new QAction(tr("Gallery"), this);
 
   actionSerialMonitor_ = new QAction(tr("Serial Monitor"), this);
   actionSerialMonitor_->setCheckable(true);
@@ -1820,6 +1833,7 @@ void MainWindow::createLayout() {
   boardCombo_->setMaximumWidth(280);
   boardCombo_->setInsertPolicy(QComboBox::NoInsert);
   boardCombo_->setPlaceholderText(tr("Select Board..."));
+  boardCombo_->setToolTip(tr("Click to open searchable board selector"));
   
   auto* boardModel = new QStandardItemModel(boardCombo_);
   auto* boardProxy = new BoardFilterProxyModel(boardCombo_); 
@@ -1830,6 +1844,7 @@ void MainWindow::createLayout() {
   boardCombo_->setItemDelegate(new BoardItemDelegate(this));
 
   // Handle clicking the star in the dropdown
+  boardCombo_->installEventFilter(this);
   if (auto* view = boardCombo_->view()) {
       view->viewport()->installEventFilter(this);
   }
@@ -1906,74 +1921,128 @@ void MainWindow::createLayout() {
   buildToolBar_->addAction(actionSerialPlotter_);
   buildToolBar_->addSeparator();
 
-  auto* polishTodoButton = new QToolButton(buildToolBar_);
-  polishTodoButton->setText(tr("TODO"));
-  polishTodoButton->setAutoRaise(true);
-  polishTodoButton->setPopupMode(QToolButton::InstantPopup);
-  polishTodoButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
-  polishTodoButton->setToolTip(
-      tr("Planned features list (not implemented yet)"));
+  // --- Context Toolbar (Top, under build actions) ---
+  fontToolBar_ = new QToolBar(tr("Context"), this);
+  fontToolBar_->setObjectName("ContextToolBar");
+  fontToolBar_->setMovable(false);
+  fontToolBar_->setFloatable(false);
+  fontToolBar_->setIconSize(QSize(18, 18));
+  fontToolBar_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  fontToolBar_->setAllowedAreas(Qt::TopToolBarArea);
 
-  auto* polishTodoMenu = new QMenu(polishTodoButton);
-  polishTodoMenu->addSection(tr("Planned (not implemented yet)"));
-  auto addTodoItem = [polishTodoMenu](const QString& label) {
-    QAction* action = polishTodoMenu->addAction(label);
-    action->setEnabled(false);
+  // --- Context Mode Bar (Right slim toolbar) ---
+  contextModeToolBar_ = new QToolBar(tr("Context Modes"), this);
+  contextModeToolBar_->setObjectName("ContextModeBar");
+  contextModeToolBar_->setMovable(false);
+  contextModeToolBar_->setFloatable(false);
+  contextModeToolBar_->setOrientation(Qt::Vertical);
+  contextModeToolBar_->setToolButtonStyle(Qt::ToolButtonIconOnly);
+  contextModeToolBar_->setIconSize(QSize(18, 18));
+
+  auto themedModeIcon = [this](const QString& iconName, QStyle::StandardPixmap fallback) {
+    QIcon icon = QIcon::fromTheme(iconName);
+    if (icon.isNull()) {
+      icon = style()->standardIcon(fallback);
+    }
+    return icon;
   };
-  addTodoItem(tr("Snapshot saving"));
-  addTodoItem(tr("GitHub upload"));
-  addTodoItem(tr("Save into existing project"));
-  addTodoItem(tr("Additional board info panel"));
-  addTodoItem(tr("Library/core version controls"));
 
-  polishTodoButton->setMenu(polishTodoMenu);
-  buildToolBar_->addWidget(polishTodoButton);
+  actionContextBuildMode_->setIcon(themedModeIcon("applications-engineering", QStyle::SP_ComputerIcon));
+  actionContextBuildMode_->setToolTip(tr("Build Tools"));
+  actionContextFontsMode_->setIcon(themedModeIcon("preferences-desktop-font", QStyle::SP_FileDialogDetailedView));
+  actionContextFontsMode_->setToolTip(tr("Font Controls"));
+  actionContextSnapshotsMode_->setIcon(themedModeIcon("camera-photo", QStyle::SP_DialogSaveButton));
+  actionContextSnapshotsMode_->setToolTip(tr("Snapshots"));
 
-  // --- Font Toolbar ---
-  fontToolBar_ = new QToolBar(tr("Font"), this);
-  fontToolBar_->setObjectName("FontToolBar");
-  fontToolBar_->setIconSize(QSize(16, 16));
-  fontToolBar_->setMovable(true);
-  fontToolBar_->setAllowedAreas(Qt::TopToolBarArea | Qt::BottomToolBarArea);
-  
-  // Thin styling prioritizing space
-  fontToolBar_->setStyleSheet(
-      "QToolBar { spacing: 4px; padding: 1px; border-bottom: 1px solid rgba(0,0,0,0.1); min-height: 24px; }"
-      "QToolBar QComboBox { min-height: 18px; font-size: 11px; max-height: 20px; }"
-      "QToolBar QToolButton { padding: 1px; max-height: 20px; }"
-      "QToolBar QToolButton[text=\"X\"] { color: white; background-color: #d32f2f; border-radius: 2px; padding: 0px 6px; font-weight: bold; min-width: 16px; }"
-  );
+  actionSnapshotCapture_->setIcon(themedModeIcon("camera-photo", QStyle::SP_DialogSaveButton));
+  actionSnapshotCapture_->setToolTip(tr("Capture editor snapshot"));
+  actionSnapshotCompare_->setIcon(themedModeIcon("view-sort-descending", QStyle::SP_FileDialogListView));
+  actionSnapshotCompare_->setToolTip(tr("Compare snapshots"));
+  actionSnapshotGallery_->setIcon(themedModeIcon("folder-pictures", QStyle::SP_DirIcon));
+  actionSnapshotGallery_->setToolTip(tr("Open snapshot gallery"));
+  connect(actionSnapshotCapture_, &QAction::triggered, this,
+          [this] { showToast(tr("Snapshot capture is not implemented yet.")); });
+  connect(actionSnapshotCompare_, &QAction::triggered, this,
+          [this] { showToast(tr("Snapshot compare is not implemented yet.")); });
+  connect(actionSnapshotGallery_, &QAction::triggered, this,
+          [this] { showToast(tr("Snapshot gallery is not implemented yet.")); });
 
-  fontFamilyCombo_ = new QComboBox(fontToolBar_);
-  fontFamilyCombo_->setEditable(true);
-  fontFamilyCombo_->setMinimumWidth(150);
-  QFontDatabase fontDb;
-  fontFamilyCombo_->addItems(fontDb.families());
-  fontToolBar_->addWidget(fontFamilyCombo_);
+  contextModeToolBar_->addAction(actionContextBuildMode_);
+  contextModeToolBar_->addAction(actionContextFontsMode_);
+  contextModeToolBar_->addAction(actionContextSnapshotsMode_);
 
-  fontSizeCombo_ = new QComboBox(fontToolBar_);
-  fontSizeCombo_->setEditable(true);
-  fontSizeCombo_->setMinimumWidth(50);
-  for (int i : {8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72}) fontSizeCombo_->addItem(QString::number(i));
-  fontToolBar_->addWidget(fontSizeCombo_);
+  if (QWidget* widget = contextModeToolBar_->widgetForAction(actionContextBuildMode_)) {
+    widget->setObjectName("ContextModeBuildButton");
+  }
+  if (QWidget* widget = contextModeToolBar_->widgetForAction(actionContextFontsMode_)) {
+    widget->setObjectName("ContextModeFontsButton");
+  }
+  if (QWidget* widget = contextModeToolBar_->widgetForAction(actionContextSnapshotsMode_)) {
+    widget->setObjectName("ContextModeSnapshotsButton");
+  }
 
-  fontToolBar_->addAction(actionToggleBold_);
+  contextModeToolBar_->setStyleSheet(
+      "QToolBar#ContextModeBar {"
+      "  background-color: #0f172a;"
+      "  border: none;"
+      "  border-left: 1px solid rgba(255,255,255,0.14);"
+      "  spacing: 6px;"
+      "  padding: 8px 3px;"
+      "  min-width: 44px;"
+      "  max-width: 44px;"
+      "}"
+      "QToolBar#ContextModeBar QToolButton {"
+      "  border: none;"
+      "  border-radius: 8px;"
+      "  padding: 8px;"
+      "  margin: 1px 0;"
+      "}"
+      "QToolBar#ContextModeBar QToolButton:hover {"
+      "  background-color: rgba(255,255,255,0.15);"
+      "}"
+      "QToolBar#ContextModeBar QToolButton#ContextModeBuildButton {"
+      "  border-right: 3px solid #f59e0b;"
+      "}"
+      "QToolBar#ContextModeBar QToolButton#ContextModeFontsButton {"
+      "  border-right: 3px solid #38bdf8;"
+      "}"
+      "QToolBar#ContextModeBar QToolButton#ContextModeSnapshotsButton {"
+      "  border-right: 3px solid #22c55e;"
+      "}"
+      "QToolBar#ContextModeBar QToolButton#ContextModeBuildButton:checked {"
+      "  background-color: rgba(245,158,11,0.30);"
+      "}"
+      "QToolBar#ContextModeBar QToolButton#ContextModeFontsButton:checked {"
+      "  background-color: rgba(56,189,248,0.30);"
+      "}"
+      "QToolBar#ContextModeBar QToolButton#ContextModeSnapshotsButton:checked {"
+      "  background-color: rgba(34,197,94,0.30);"
+      "}");
 
-  QWidget* fontSpacer = new QWidget(fontToolBar_);
-  fontSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-  fontToolBar_->addWidget(fontSpacer);
+  auto* contextModeGroup = new QActionGroup(this);
+  contextModeGroup->setExclusive(true);
+  contextModeGroup->addAction(actionContextBuildMode_);
+  contextModeGroup->addAction(actionContextFontsMode_);
+  contextModeGroup->addAction(actionContextSnapshotsMode_);
+  connect(contextModeGroup, &QActionGroup::triggered, this,
+          [this](QAction* action) {
+            if (action == actionContextBuildMode_) {
+              setContextToolbarMode(ContextToolbarMode::Build);
+            } else if (action == actionContextFontsMode_) {
+              setContextToolbarMode(ContextToolbarMode::Fonts);
+            } else if (action == actionContextSnapshotsMode_) {
+              setContextToolbarMode(ContextToolbarMode::Snapshots);
+            }
+          });
 
-  QAction* closeAction = new QAction("X", fontToolBar_);
-  connect(closeAction, &QAction::triggered, this, [this] {
-      fontToolBar_->hide();
-      actionToggleFontToolBar_->setChecked(false);
-  });
-  fontToolBar_->addAction(closeAction);
+  actionContextFontsMode_->setChecked(true);
+  setContextToolbarMode(ContextToolbarMode::Fonts);
 
   // Add the toolbars to the window in strict order
   addToolBar(Qt::TopToolBarArea, buildToolBar_);
   addToolBarBreak(Qt::TopToolBarArea);
   addToolBar(Qt::TopToolBarArea, fontToolBar_);
+  addToolBar(Qt::RightToolBarArea, contextModeToolBar_);
   if (actionToggleFontToolBar_) {
     connect(actionToggleFontToolBar_, &QAction::toggled, this,
             [this](bool visible) {
@@ -2845,6 +2914,23 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    if (boardCombo_ && watched == boardCombo_) {
+        if (event->type() == QEvent::MouseButtonPress) {
+            showSelectBoardDialog();
+            return true;
+        }
+        if (event->type() == QEvent::KeyPress) {
+            auto* keyEvent = static_cast<QKeyEvent*>(event);
+            const int key = keyEvent->key();
+            if (key == Qt::Key_Space || key == Qt::Key_Return ||
+                key == Qt::Key_Enter || key == Qt::Key_Down ||
+                key == Qt::Key_F4) {
+                showSelectBoardDialog();
+                return true;
+            }
+        }
+    }
+
     if (boardCombo_ && watched == boardCombo_->view()->viewport()) {
         if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonRelease) {
             QMouseEvent* mouseEvent = static_cast<QMouseEvent*>(event);
@@ -6022,17 +6108,236 @@ void MainWindow::updateBoardPortIndicator() {
   }
 }
 
+void MainWindow::setContextToolbarMode(ContextToolbarMode mode) {
+  contextToolbarMode_ = mode;
+  rebuildContextToolbar();
+}
+
+void MainWindow::rebuildContextToolbar() {
+  if (!fontToolBar_) {
+    return;
+  }
+
+  if (actionContextBuildMode_) {
+    const QSignalBlocker blocker(actionContextBuildMode_);
+    actionContextBuildMode_->setChecked(contextToolbarMode_ == ContextToolbarMode::Build);
+  }
+  if (actionContextFontsMode_) {
+    const QSignalBlocker blocker(actionContextFontsMode_);
+    actionContextFontsMode_->setChecked(contextToolbarMode_ == ContextToolbarMode::Fonts);
+  }
+  if (actionContextSnapshotsMode_) {
+    const QSignalBlocker blocker(actionContextSnapshotsMode_);
+    actionContextSnapshotsMode_->setChecked(contextToolbarMode_ == ContextToolbarMode::Snapshots);
+  }
+
+  fontFamilyCombo_ = nullptr;
+  fontSizeCombo_ = nullptr;
+  fontToolBar_->clear();
+
+  QString title;
+  QString gradientStart;
+  QString gradientEnd;
+  QString borderColor;
+  QString textColor;
+  QString accentColor;
+
+  switch (contextToolbarMode_) {
+    case ContextToolbarMode::Build:
+      title = tr("Build");
+      gradientStart = "#fef3c7";
+      gradientEnd = "#fde68a";
+      borderColor = "#f59e0b";
+      textColor = "#5b3a00";
+      accentColor = "#d97706";
+      break;
+    case ContextToolbarMode::Fonts:
+      title = tr("Fonts");
+      gradientStart = "#f8fafc";
+      gradientEnd = "#e2e8f0";
+      borderColor = "#94a3b8";
+      textColor = "#0f172a";
+      accentColor = "#0284c7";
+      break;
+    case ContextToolbarMode::Snapshots:
+      title = tr("Snapshots");
+      gradientStart = "#dcfce7";
+      gradientEnd = "#bbf7d0";
+      borderColor = "#22c55e";
+      textColor = "#14532d";
+      accentColor = "#15803d";
+      break;
+  }
+
+  fontToolBar_->setStyleSheet(QString(
+      "QToolBar#ContextToolBar {"
+      "  background-color: %1;"
+      "  background-image: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 %1, stop:1 %2);"
+      "  border: none;"
+      "  border-bottom: 1px solid %3;"
+      "  padding: 4px 10px;"
+      "  spacing: 6px;"
+      "}"
+      "QToolBar#ContextToolBar QLabel#ContextToolbarTitle {"
+      "  color: %4;"
+      "  font-weight: 700;"
+      "  margin-right: 6px;"
+      "}"
+      "QToolBar#ContextToolBar QToolButton {"
+      "  color: %4;"
+      "  border: 1px solid rgba(255,255,255,0.45);"
+      "  border-radius: 6px;"
+      "  background-color: rgba(255,255,255,0.24);"
+      "  padding: 5px 8px;"
+      "}"
+      "QToolBar#ContextToolBar QToolButton:hover {"
+      "  background-color: rgba(255,255,255,0.40);"
+      "}"
+      "QToolBar#ContextToolBar QToolButton:pressed {"
+      "  background-color: rgba(255,255,255,0.55);"
+      "}"
+      "QToolBar#ContextToolBar QToolButton:checked {"
+      "  background-color: %5;"
+      "  border-color: %5;"
+      "  color: #ffffff;"
+      "}"
+      "QToolBar#ContextToolBar QComboBox {"
+      "  color: %4;"
+      "  border: 1px solid rgba(255,255,255,0.60);"
+      "  border-radius: 6px;"
+      "  background-color: rgba(255,255,255,0.35);"
+      "  padding: 3px 22px 3px 8px;"
+      "  min-height: 22px;"
+      "}"
+      "QToolBar#ContextToolBar QComboBox::drop-down {"
+      "  border: none;"
+      "  width: 20px;"
+      "}")
+      .arg(gradientStart, gradientEnd, borderColor, textColor, accentColor));
+
+  auto* titleLabel = new QLabel(title, fontToolBar_);
+  titleLabel->setObjectName("ContextToolbarTitle");
+  fontToolBar_->addWidget(titleLabel);
+  fontToolBar_->addSeparator();
+
+  if (contextToolbarMode_ == ContextToolbarMode::Build) {
+    if (actionRefreshBoards_ && actionRefreshBoards_->icon().isNull()) {
+      actionRefreshBoards_->setIcon(
+          QIcon::fromTheme("view-refresh", style()->standardIcon(QStyle::SP_BrowserReload)));
+    }
+    if (actionRefreshPorts_ && actionRefreshPorts_->icon().isNull()) {
+      actionRefreshPorts_->setIcon(
+          QIcon::fromTheme("view-refresh", style()->standardIcon(QStyle::SP_BrowserReload)));
+    }
+
+    fontToolBar_->addAction(actionVerify_);
+    fontToolBar_->addAction(actionUpload_);
+    fontToolBar_->addAction(actionJustUpload_);
+    fontToolBar_->addAction(actionStop_);
+    fontToolBar_->addSeparator();
+    fontToolBar_->addAction(actionRefreshBoards_);
+    fontToolBar_->addAction(actionRefreshPorts_);
+  } else if (contextToolbarMode_ == ContextToolbarMode::Fonts) {
+    fontFamilyCombo_ = new QComboBox(fontToolBar_);
+    fontFamilyCombo_->setEditable(true);
+    fontFamilyCombo_->setMinimumWidth(180);
+    QFontDatabase fontDb;
+    fontFamilyCombo_->addItems(fontDb.families());
+    fontToolBar_->addWidget(fontFamilyCombo_);
+
+    fontSizeCombo_ = new QComboBox(fontToolBar_);
+    fontSizeCombo_->setEditable(true);
+    fontSizeCombo_->setMinimumWidth(64);
+    for (int size : {8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72}) {
+      fontSizeCombo_->addItem(QString::number(size));
+    }
+    fontToolBar_->addWidget(fontSizeCombo_);
+
+    if (editor_) {
+      const QFont currentFont = editor_->editorFont();
+      const QString family = currentFont.family().trimmed();
+      if (!family.isEmpty()) {
+        const int familyIndex =
+            fontFamilyCombo_->findText(family, Qt::MatchFixedString);
+        if (familyIndex >= 0) {
+          fontFamilyCombo_->setCurrentIndex(familyIndex);
+        } else {
+          fontFamilyCombo_->setEditText(family);
+        }
+      }
+
+      const int pointSize = currentFont.pointSize();
+      if (pointSize > 0) {
+        const QString sizeText = QString::number(pointSize);
+        const int sizeIndex =
+            fontSizeCombo_->findText(sizeText, Qt::MatchFixedString);
+        if (sizeIndex >= 0) {
+          fontSizeCombo_->setCurrentIndex(sizeIndex);
+        } else {
+          fontSizeCombo_->setEditText(sizeText);
+        }
+      }
+
+      const QSignalBlocker blocker(actionToggleBold_);
+      actionToggleBold_->setChecked(currentFont.bold());
+    }
+
+    actionToggleBold_->setIcon(
+        QIcon::fromTheme("format-text-bold",
+                         style()->standardIcon(QStyle::SP_TitleBarShadeButton)));
+    fontToolBar_->addAction(actionToggleBold_);
+
+    connect(fontFamilyCombo_, &QComboBox::editTextChanged, this,
+            [this](const QString&) { updateFontFromToolbar(); });
+    connect(fontFamilyCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { updateFontFromToolbar(); });
+    connect(fontSizeCombo_, &QComboBox::editTextChanged, this,
+            [this](const QString&) { updateFontFromToolbar(); });
+    connect(fontSizeCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { updateFontFromToolbar(); });
+    connect(actionToggleBold_, &QAction::triggered, this,
+            &MainWindow::updateFontFromToolbar, Qt::UniqueConnection);
+  } else if (contextToolbarMode_ == ContextToolbarMode::Snapshots) {
+    fontToolBar_->addAction(actionSnapshotCapture_);
+    fontToolBar_->addAction(actionSnapshotCompare_);
+    fontToolBar_->addAction(actionSnapshotGallery_);
+  }
+
+  QWidget* spacer = new QWidget(fontToolBar_);
+  spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+  fontToolBar_->addWidget(spacer);
+
+  QAction* hideAction = fontToolBar_->addAction(
+      QIcon::fromTheme("window-close",
+                       style()->standardIcon(QStyle::SP_TitleBarCloseButton)),
+      tr("Hide"));
+  hideAction->setToolTip(tr("Hide context toolbar"));
+  connect(hideAction, &QAction::triggered, this, [this] {
+    if (fontToolBar_) {
+      fontToolBar_->hide();
+    }
+    if (actionToggleFontToolBar_) {
+      actionToggleFontToolBar_->setChecked(false);
+    }
+  });
+}
+
 void MainWindow::updateFontFromToolbar() {
-    if (!editor_) return;
-    
-    QFont font = editor_->editorFont();
-    QString family = fontFamilyCombo_->currentText();
-    if (!family.isEmpty()) font.setFamily(family);
-    
-    int size = fontSizeCombo_->currentText().toInt();
-    if (size > 0) font.setPointSize(size);
-    
-    font.setBold(actionToggleBold_->isChecked());
-    
-    editor_->setEditorFont(font);
+  if (!editor_ || !fontFamilyCombo_ || !fontSizeCombo_ || !actionToggleBold_) {
+    return;
+  }
+
+  QFont font = editor_->editorFont();
+  const QString family = fontFamilyCombo_->currentText().trimmed();
+  if (!family.isEmpty()) {
+    font.setFamily(family);
+  }
+
+  const int size = fontSizeCombo_->currentText().toInt();
+  if (size > 0) {
+    font.setPointSize(size);
+  }
+
+  font.setBold(actionToggleBold_->isChecked());
+  editor_->setEditorFont(font);
 }
