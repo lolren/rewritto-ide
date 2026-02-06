@@ -6542,8 +6542,21 @@ void MainWindow::rebuildContextToolbar() {
       blendColors(buttonBackground, accentColor, darkTheme ? 0.18 : 0.12);
   const QColor checkedTextColor =
       readableForeground(checkedBackground);
-  const QColor comboBackground = baseColor;
-  const QColor comboBorder = borderBase;
+  const QColor comboBackground =
+      blendColors(buttonBackground, panelColor, darkTheme ? 0.26 : 0.18);
+  const QColor comboTextColor = readableForeground(comboBackground);
+  const QColor comboBorder =
+      blendColors(borderBase, comboTextColor, darkTheme ? 0.30 : 0.20);
+  const QColor comboHover =
+      blendColors(comboBackground, accentColor, darkTheme ? 0.18 : 0.12);
+  const QColor comboFocusBorder =
+      blendColors(comboBorder, accentColor, darkTheme ? 0.38 : 0.28);
+  const QColor comboPopupBackground =
+      blendColors(baseColor, comboBackground, darkTheme ? 0.44 : 0.36);
+  const QColor comboPopupText = readableForeground(comboPopupBackground);
+  const QColor comboSelectionBackground =
+      blendColors(comboPopupBackground, accentColor, darkTheme ? 0.45 : 0.34);
+  const QColor comboSelectionText = readableForeground(comboSelectionBackground);
 
   fontToolBar_->setStyleSheet(QString(
       "QToolBar#ContextToolBar {"
@@ -6578,23 +6591,55 @@ void MainWindow::rebuildContextToolbar() {
       "  color: %10;"
       "}"
       "QToolBar#ContextToolBar QComboBox {"
-      "  color: %13;"
+      "  color: %14;"
       "  border: 1px solid %11;"
       "  border-radius: 6px;"
       "  background-color: %12;"
-      "  padding: 3px 22px 3px 8px;"
+      "  padding: 3px 24px 3px 8px;"
       "  min-height: 22px;"
+      "}"
+      "QToolBar#ContextToolBar QComboBox:hover,"
+      "QToolBar#ContextToolBar QComboBox:on {"
+      "  background-color: %15;"
+      "  border-color: %16;"
+      "}"
+      "QToolBar#ContextToolBar QComboBox QLineEdit {"
+      "  color: %14;"
+      "  background-color: transparent;"
+      "  border: none;"
+      "  padding: 0px;"
+      "  selection-background-color: %19;"
+      "  selection-color: %20;"
       "}"
       "QToolBar#ContextToolBar QComboBox::drop-down {"
       "  border: none;"
       "  width: 20px;"
+      "  background: transparent;"
+      "}"
+      "QToolBar#ContextToolBar QComboBox QAbstractItemView {"
+      "  color: %17;"
+      "  background-color: %18;"
+      "  border: 1px solid %16;"
+      "  border-radius: 6px;"
+      "  selection-background-color: %19;"
+      "  selection-color: %20;"
+      "  outline: none;"
+      "}"
+      "QToolBar#ContextToolBar QComboBox QAbstractItemView::item {"
+      "  color: %17;"
+      "  min-height: 22px;"
+      "  padding: 5px 8px;"
       "}")
       .arg(colorHex(gradientStartColor), colorHex(gradientEndColor),
            colorHex(borderColor), colorHex(toolbarTextColor), colorHex(buttonBorder),
            colorHex(buttonBackground), colorHex(buttonHover),
            colorHex(buttonPressed), colorHex(checkedBackground),
            colorHex(checkedTextColor), colorHex(comboBorder),
-           colorHex(comboBackground), colorHex(buttonTextColor)));
+           colorHex(comboBackground), colorHex(buttonTextColor),
+           colorHex(comboTextColor), colorHex(comboHover),
+           colorHex(comboFocusBorder), colorHex(comboPopupText),
+           colorHex(comboPopupBackground), colorHex(comboSelectionBackground),
+           colorHex(comboSelectionText)));
 
   auto* titleLabel = new QLabel(title, fontToolBar_);
   titleLabel->setObjectName("ContextToolbarTitle");
