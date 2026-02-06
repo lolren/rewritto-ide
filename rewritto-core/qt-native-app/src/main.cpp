@@ -4,6 +4,8 @@
 
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QDir>
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -20,6 +22,10 @@
 namespace {
 constexpr auto kBrandOrg = "Rewritto";
 constexpr auto kBrandApp = "Rewritto-ide";
+
+#if defined(Q_OS_LINUX)
+constexpr const char* kPreferredSettingsRoot = "/home/rewritto";
+#endif
 
 struct LegacySettingsId final {
   const char* org;
@@ -58,6 +64,52 @@ QString singleInstanceServerName() {
   return QStringLiteral("com.rewritto.ide.%1").arg(user);
 }
 
+bool ensureWritableDirectory(const QString& path) {
+  if (path.trimmed().isEmpty()) {
+    return false;
+  }
+
+  if (!QDir().mkpath(path)) {
+    return false;
+  }
+
+  const QString probePath =
+      QDir(path).absoluteFilePath(QStringLiteral(".rewritto-write-test"));
+  QFile probe(probePath);
+  if (!probe.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    return false;
+  }
+  probe.write("ok");
+  probe.close();
+  (void)probe.remove();
+  return true;
+}
+
+void configureLinuxSettingsRoot() {
+#if defined(Q_OS_LINUX)
+  const QString preferredRoot = QString::fromUtf8(kPreferredSettingsRoot);
+  const QString fallbackRoot = QDir::homePath() + QStringLiteral("/rewritto");
+
+  QString settingsRoot = preferredRoot;
+  if (!ensureWritableDirectory(settingsRoot)) {
+    settingsRoot = fallbackRoot;
+    if (!ensureWritableDirectory(settingsRoot)) {
+      qWarning("Could not initialize settings directory at '%s' or '%s'. "
+               "Using system defaults.",
+               qPrintable(preferredRoot), qPrintable(fallbackRoot));
+      return;
+    }
+    qWarning("Preferred settings directory '%s' is not writable; using '%s'.",
+             qPrintable(preferredRoot), qPrintable(settingsRoot));
+  }
+
+  (void)QDir().mkpath(settingsRoot);
+
+  QSettings::setDefaultFormat(QSettings::IniFormat);
+  QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsRoot);
+#endif
+}
+
 void migrateLegacySettingsIfNeeded() {
   QSettings current;
   if (!current.allKeys().isEmpty()) {
@@ -90,6 +142,7 @@ void migrateLegacySettingsIfNeeded() {
 
 int main(int argc, char* argv[]) {
   g_prevMessageHandler = qInstallMessageHandler(rewrittoMessageHandler);
+  configureLinuxSettingsRoot();
 
   QApplication app(argc, argv);
   QApplication::setApplicationName(kBrandApp);

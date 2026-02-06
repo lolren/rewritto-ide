@@ -1,5 +1,6 @@
 #include "serial_port.h"
 
+#if defined(Q_OS_UNIX)
 #include <QSocketNotifier>
 
 #include <cerrno>
@@ -8,7 +9,9 @@
 #include <fcntl.h>
 #include <termios.h>
 #include <unistd.h>
+#endif
 
+#if defined(Q_OS_UNIX)
 static speed_t baudToSpeed(int baudRate) {
   switch (baudRate) {
     case 50:
@@ -99,10 +102,18 @@ static speed_t baudToSpeed(int baudRate) {
       return 0;
   }
 }
+#endif
 
 SerialPort::SerialPort(QObject* parent) : QObject(parent) {}
 
 bool SerialPort::openPort(const QString& portPath, int baudRate) {
+#if !defined(Q_OS_UNIX)
+  Q_UNUSED(portPath);
+  Q_UNUSED(baudRate);
+  closePort();
+  emit errorOccurred("Serial port is not supported on this platform yet.");
+  return false;
+#else
   closePort();
 
   const QByteArray pathBytes = portPath.toLocal8Bit();
@@ -159,9 +170,11 @@ bool SerialPort::openPort(const QString& portPath, int baudRate) {
 
   setOpen(true);
   return true;
+#endif
 }
 
 void SerialPort::closePort() {
+#if defined(Q_OS_UNIX)
   if (readNotifier_) {
     readNotifier_->setEnabled(false);
     readNotifier_->deleteLater();
@@ -176,10 +189,22 @@ void SerialPort::closePort() {
     baudRate_ = 0;
     setOpen(false);
   }
+#else
+  if (!portPath_.isEmpty() || baudRate_ != 0 || fd_ >= 0) {
+    fd_ = -1;
+    portPath_.clear();
+    baudRate_ = 0;
+    setOpen(false);
+  }
+#endif
 }
 
 bool SerialPort::isOpen() const {
+#if defined(Q_OS_UNIX)
   return fd_ >= 0;
+#else
+  return false;
+#endif
 }
 
 QString SerialPort::portPath() const {
@@ -191,6 +216,11 @@ int SerialPort::baudRate() const {
 }
 
 bool SerialPort::writeBytes(const QByteArray& data) {
+#if !defined(Q_OS_UNIX)
+  Q_UNUSED(data);
+  emit errorOccurred("Serial port is not supported on this platform yet.");
+  return false;
+#else
   if (fd_ < 0) {
     emit errorOccurred("Serial port is not open.");
     return false;
@@ -217,6 +247,7 @@ bool SerialPort::writeBytes(const QByteArray& data) {
     remaining -= n;
   }
   return true;
+#endif
 }
 
 void SerialPort::setOpen(bool open) {
@@ -224,6 +255,9 @@ void SerialPort::setOpen(bool open) {
 }
 
 void SerialPort::handleReadable() {
+#if !defined(Q_OS_UNIX)
+  return;
+#else
   if (fd_ < 0) {
     return;
   }
@@ -252,4 +286,5 @@ void SerialPort::handleReadable() {
     closePort();
     return;
   }
+#endif
 }

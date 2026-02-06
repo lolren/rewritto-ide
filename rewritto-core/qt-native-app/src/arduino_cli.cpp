@@ -9,7 +9,43 @@
 namespace {
 constexpr int kMaxDiagnosticExtraLines = 2;
 
+QString cliExecutableName() {
+#if defined(Q_OS_WIN)
+  return QStringLiteral("arduino-cli.exe");
+#else
+  return QStringLiteral("arduino-cli");
+#endif
+}
+
+QString defaultArduinoDataDir() {
+#if defined(Q_OS_WIN)
+  QString localAppData = qEnvironmentVariable("LOCALAPPDATA").trimmed();
+  if (localAppData.isEmpty()) {
+    localAppData = QDir(QDir::homePath())
+                       .absoluteFilePath(QStringLiteral("AppData/Local"));
+  }
+  return QDir(localAppData).absoluteFilePath(QStringLiteral("Arduino15"));
+#else
+  return QDir(QDir::homePath()).absoluteFilePath(QStringLiteral(".arduino15"));
+#endif
+}
+
+QString defaultArduinoUserDir() {
+#if defined(Q_OS_WIN)
+  const QString docs =
+      QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+  if (!docs.trimmed().isEmpty()) {
+    return QDir(docs).absoluteFilePath(QStringLiteral("Arduino"));
+  }
+#endif
+  return QDir(QDir::homePath()).absoluteFilePath(QStringLiteral("Arduino"));
+}
+
 bool isLikelySnapArduinoCliPath(QString path) {
+#if !defined(Q_OS_LINUX)
+  Q_UNUSED(path);
+  return false;
+#else
   path = path.trimmed();
   if (path.isEmpty()) {
     return false;
@@ -28,6 +64,7 @@ bool isLikelySnapArduinoCliPath(QString path) {
   }
 
   return false;
+#endif
 }
 
 QString findFirstNonSnapArduinoCliFromPath() {
@@ -42,7 +79,7 @@ QString findFirstNonSnapArduinoCliFromPath() {
     if (dir.isEmpty()) {
       continue;
     }
-    const QString candidate = QDir(dir).filePath(QStringLiteral("arduino-cli"));
+    const QString candidate = QDir(dir).filePath(cliExecutableName());
     const QFileInfo fi(candidate);
     if (!fi.exists() || !fi.isFile() || !fi.isExecutable()) {
       continue;
@@ -553,7 +590,8 @@ QString ArduinoCli::resolveDefaultArduinoCliPath() {
   }
 
   const QString appDir = QCoreApplication::applicationDirPath();
-  const QString bundled = appDir + QStringLiteral("/arduino-cli");
+  const QString cliName = cliExecutableName();
+  const QString bundled = QDir(appDir).absoluteFilePath(cliName);
   if (QFileInfo::exists(bundled)) {
     return bundled;
   }
@@ -561,10 +599,13 @@ QString ArduinoCli::resolveDefaultArduinoCliPath() {
   // Development fallback: when running a native build from the build dir, reuse
   // the arduino-cli downloaded for AppImage packaging if present.
   const QStringList devCandidates = {
-      QDir(appDir).absoluteFilePath(QStringLiteral(".tools/appimage/arduino-cli/arduino-cli")),
-      QDir(appDir).absoluteFilePath(QStringLiteral("../.tools/appimage/arduino-cli/arduino-cli")),
       QDir(appDir).absoluteFilePath(
-          QStringLiteral("../rewritto-core/qt-native-app/.tools/appimage/arduino-cli/arduino-cli")),
+          QStringLiteral(".tools/appimage/arduino-cli/") + cliName),
+      QDir(appDir).absoluteFilePath(
+          QStringLiteral("../.tools/appimage/arduino-cli/") + cliName),
+      QDir(appDir).absoluteFilePath(
+          QStringLiteral("../rewritto-core/qt-native-app/.tools/appimage/arduino-cli/") +
+          cliName),
   };
   for (const QString& candidate : devCandidates) {
     const QFileInfo fi(candidate);
@@ -573,7 +614,7 @@ QString ArduinoCli::resolveDefaultArduinoCliPath() {
     }
   }
 
-  const QString found = QStandardPaths::findExecutable(QStringLiteral("arduino-cli"));
+  const QString found = QStandardPaths::findExecutable(cliName);
   if (!found.isEmpty()) {
     if (!isLikelySnapArduinoCliPath(found)) {
       return found;
@@ -585,7 +626,7 @@ QString ArduinoCli::resolveDefaultArduinoCliPath() {
     return found;
   }
 
-  return QStringLiteral("arduino-cli");
+  return cliName;
 }
 
 QString ArduinoCli::resolveDefaultArduinoCliConfigPath() {
@@ -606,8 +647,15 @@ QString ArduinoCli::resolveDefaultArduinoCliConfigPath() {
 
   if (!QFileInfo::exists(path)) {
     const QString appConfig = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+    const QString localAppData = qEnvironmentVariable("LOCALAPPDATA").trimmed();
+    const QString windowsArduino15Config =
+        localAppData.isEmpty()
+            ? QString{}
+            : QDir(localAppData).absoluteFilePath(
+                  QStringLiteral("Arduino15/arduino-cli.yaml"));
     const QStringList legacyCandidates = {
         home + QStringLiteral("/.arduino15/arduino-cli.yaml"),
+        windowsArduino15Config,
         home + QStringLiteral("/.config/arduino-ide/arduino-cli.yaml"),
         home + QStringLiteral("/.config/Arduino IDE/arduino-cli.yaml"),
         appConfig.isEmpty() ? QString{} : (appConfig + QStringLiteral("/arduino-cli.yaml")),
@@ -636,8 +684,9 @@ QString ArduinoCli::resolveDefaultArduinoCliConfigPath() {
   if (!QFileInfo::exists(path)) {
     QFile f(path);
     if (f.open(QIODevice::WriteOnly | QIODevice::Text)) {
-      const QString dataDir = home + QStringLiteral("/.arduino15");
-      const QString userDir = home + QStringLiteral("/Arduino");
+      const QString dataDir = defaultArduinoDataDir();
+      const QString userDir = defaultArduinoUserDir();
+      QDir().mkpath(dataDir);
       QDir().mkpath(userDir);
       f.write("# arduino-cli configuration (shared with Rewritto-ide)\n");
       f.write("directories:\n");

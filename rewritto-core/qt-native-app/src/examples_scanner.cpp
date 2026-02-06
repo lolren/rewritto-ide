@@ -4,14 +4,23 @@
 #include <QDir>
 #include <QDirIterator>
 #include <QFileInfo>
+#include <QStandardPaths>
 #include <QVersionNumber>
 
 namespace {
 QString defaultSketchbookDir() {
-  const QString home = QDir::homePath();
-  const QString preferred = home + QStringLiteral("/Rewritto");
-  const QString previous = home + QStringLiteral("/Rewritto");
-  const QString legacy = home + QStringLiteral("/Arduino");
+  QString baseDir = QDir::homePath();
+#if defined(Q_OS_WIN)
+  const QString docs =
+      QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+  if (!docs.trimmed().isEmpty()) {
+    baseDir = docs;
+  }
+#endif
+
+  const QString preferred = QDir(baseDir).absoluteFilePath(QStringLiteral("Rewritto-ide"));
+  const QString previous = QDir(baseDir).absoluteFilePath(QStringLiteral("Rewritto"));
+  const QString legacy = QDir(baseDir).absoluteFilePath(QStringLiteral("Arduino"));
   if (QDir(legacy).exists() && !QDir(preferred).exists() && !QDir(previous).exists()) {
     return legacy;
   }
@@ -22,7 +31,16 @@ QString defaultSketchbookDir() {
 }
 
 QString defaultDataDir() {
+#if defined(Q_OS_WIN)
+  QString localAppData = qEnvironmentVariable("LOCALAPPDATA").trimmed();
+  if (localAppData.isEmpty()) {
+    localAppData =
+        QDir(QDir::homePath()).absoluteFilePath(QStringLiteral("AppData/Local"));
+  }
+  return QDir(localAppData).absoluteFilePath(QStringLiteral("Arduino15"));
+#else
   return QDir::homePath() + QStringLiteral("/.arduino15");
+#endif
 }
 
 QString chooseMainIno(const QString& folderPath, QStringList inos) {
@@ -204,7 +222,7 @@ ExamplesScanner::Options ExamplesScanner::defaultOptions() {
   // Linux standard paths
   o.builtinDir = QStringLiteral("/usr/share/arduino/examples");
   if (!QDir(o.builtinDir).exists()) {
-      o.builtinDir = QDir::homePath() + "/.arduino15/examples";
+      o.builtinDir = QDir(o.dataDir).absoluteFilePath(QStringLiteral("examples"));
   }
   return o;
 }
