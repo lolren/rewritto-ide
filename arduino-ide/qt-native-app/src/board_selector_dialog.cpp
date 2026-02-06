@@ -85,6 +85,9 @@ class BoardFilterProxyModel final : public QSortFilterProxyModel {
  protected:
   bool filterAcceptsRow(int sourceRow,
                         const QModelIndex& sourceParent) const override {
+    if (!sourceModel() || sourceRow < 0) {
+      return false;
+    }
     if (filterRegularExpression().pattern().isEmpty()) {
       return true;
     }
@@ -97,8 +100,17 @@ class BoardFilterProxyModel final : public QSortFilterProxyModel {
   }
 
   bool lessThan(const QModelIndex& source_left, const QModelIndex& source_right) const override {
-      const QString fqbnLeft = sourceModel()->index(source_left.row(), kColFqbn).data(Qt::DisplayRole).toString();
-      const QString fqbnRight = sourceModel()->index(source_right.row(), kColFqbn).data(Qt::DisplayRole).toString();
+      if (!sourceModel()) {
+          return QSortFilterProxyModel::lessThan(source_left, source_right);
+      }
+      if (!source_left.isValid() || !source_right.isValid()) {
+          return QSortFilterProxyModel::lessThan(source_left, source_right);
+      }
+
+      const QModelIndex fqbnLeftIndex = source_left.sibling(source_left.row(), kColFqbn);
+      const QModelIndex fqbnRightIndex = source_right.sibling(source_right.row(), kColFqbn);
+      const QString fqbnLeft = sourceModel()->data(fqbnLeftIndex, Qt::DisplayRole).toString();
+      const QString fqbnRight = sourceModel()->data(fqbnRightIndex, Qt::DisplayRole).toString();
 
       // 1. Current selected board always on top
       if (!selectedFqbn_.isEmpty()) {
@@ -107,8 +119,10 @@ class BoardFilterProxyModel final : public QSortFilterProxyModel {
           if (isSelLeft != isSelRight) return isSelLeft;
       }
 
-      const bool favLeft = sourceModel()->index(source_left.row(), kColFavorite).data(kRoleIsFavorite).toBool();
-      const bool favRight = sourceModel()->index(source_right.row(), kColFavorite).data(kRoleIsFavorite).toBool();
+      const QModelIndex favLeftIndex = source_left.sibling(source_left.row(), kColFavorite);
+      const QModelIndex favRightIndex = source_right.sibling(source_right.row(), kColFavorite);
+      const bool favLeft = sourceModel()->data(favLeftIndex, kRoleIsFavorite).toBool();
+      const bool favRight = sourceModel()->data(favRightIndex, kRoleIsFavorite).toBool();
 
       // 2. Favorites (bookmarks) under selected
       if (favLeft != favRight) {
@@ -193,11 +207,18 @@ BoardSelectorDialog::BoardSelectorDialog(QWidget* parent) : QDialog(parent) {
   connect(table_, &QTableView::clicked, this, [this](const QModelIndex& index) {
       if (index.column() == kColFavorite) {
           const QModelIndex srcIdx = proxy_->mapToSource(index);
+          if (!srcIdx.isValid()) {
+              return;
+          }
           const QString fqbn = model_->data(model_->index(srcIdx.row(), kColFqbn)).toString();
+          if (fqbn.isEmpty()) {
+              return;
+          }
           bool isFav = !model_->data(srcIdx, kRoleIsFavorite).toBool();
           model_->setData(srcIdx, isFav, kRoleIsFavorite);
           emit favoriteToggled(fqbn);
           proxy_->invalidate(); // Trigger re-sort
+          proxy_->sort(kColName, Qt::AscendingOrder);
       }
   });
 }
@@ -219,6 +240,8 @@ void BoardSelectorDialog::setBoards(QVector<BoardEntry> boards) {
     model_->appendRow(row);
   }
 
+  proxy_->invalidate();
+  proxy_->sort(kColName, Qt::AscendingOrder);
   table_->resizeColumnToContents(kColName);
 }
 
@@ -264,4 +287,3 @@ QString BoardSelectorDialog::selectedFqbn() const {
   const QModelIndex fqbnIdx = model_->index(src.row(), kColFqbn);
   return model_->data(fqbnIdx, Qt::DisplayRole).toString().trimmed();
 }
-

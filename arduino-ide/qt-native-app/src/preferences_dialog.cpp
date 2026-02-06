@@ -22,9 +22,12 @@
 #include <QMessageBox>
 #include <QInputDialog>
 #include <QNetworkAccessManager>
+#include <QNetworkProxy>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPointer>
 #include <QSignalBlocker>
+#include <QTimer>
 
 PreferencesDialog::PreferencesDialog(QWidget* parent) : QDialog(parent) {
   setWindowTitle(tr("Preferences"));
@@ -39,6 +42,10 @@ PreferencesDialog::PreferencesDialog(QWidget* parent) : QDialog(parent) {
   themeCombo_->addItem(tr("Arduino"), "arduino");
   themeCombo_->addItem(tr("Oceanic"), "oceanic");
   themeCombo_->addItem(tr("Cyber"), "cyber");
+  themeCombo_->addItem(tr("Graphite"), "graphite");
+  themeCombo_->addItem(tr("Nord"), "nord");
+  themeCombo_->addItem(tr("Everforest"), "everforest");
+  themeCombo_->addItem(tr("Dawn"), "dawn");
   themeCombo_->addItem(tr("Y2K"), "y2k");
   connect(themeCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
           [this](int) { emit themePreviewRequested(theme()); });
@@ -194,9 +201,85 @@ PreferencesDialog::PreferencesDialog(QWidget* parent) : QDialog(parent) {
   testConnectionButton_ = new QPushButton(tr("Test Connection"), this);
   testConnectionButton_->setEnabled(false);
   connect(testConnectionButton_, &QPushButton::clicked, this, [this]() {
-    QMessageBox::information(this, tr("Connection Test"),
-                            tr("Connection test functionality will be implemented.\n"
-                              "This will test connectivity to package servers."));
+    const QString type = proxyType();
+    const QString host = proxyHost();
+    if (type != QStringLiteral("none") && host.isEmpty()) {
+      QMessageBox::warning(this, tr("Connection Test"),
+                           tr("Please set a proxy host first."));
+      return;
+    }
+
+    const QString originalButtonText = testConnectionButton_->text();
+    testConnectionButton_->setEnabled(false);
+    testConnectionButton_->setText(tr("Testing…"));
+
+    auto* manager = new QNetworkAccessManager(this);
+    if (type != QStringLiteral("none")) {
+      QNetworkProxy::ProxyType proxyType = QNetworkProxy::HttpProxy;
+      if (type == QStringLiteral("socks5")) {
+        proxyType = QNetworkProxy::Socks5Proxy;
+      }
+      QNetworkProxy proxy(proxyType, host, proxyPort(), proxyUsername(),
+                          proxyPassword());
+      manager->setProxy(proxy);
+    } else {
+      manager->setProxy(QNetworkProxy::NoProxy);
+    }
+
+    QNetworkRequest req(QUrl(QStringLiteral("https://downloads.arduino.cc/")));
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::NoLessSafeRedirectPolicy);
+    req.setTransferTimeout(12000);
+
+    QNetworkReply* reply = manager->head(req);
+    auto* timeoutTimer = new QTimer(reply);
+    timeoutTimer->setSingleShot(true);
+    connect(timeoutTimer, &QTimer::timeout, reply, [reply] {
+      if (reply->isRunning()) {
+        reply->abort();
+      }
+    });
+    timeoutTimer->start(13000);
+
+    QPointer<QPushButton> buttonGuard = testConnectionButton_;
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, manager, buttonGuard, originalButtonText]() {
+              const int statusCode =
+                  reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                      .toInt();
+              const bool success =
+                  (reply->error() == QNetworkReply::NoError &&
+                   (statusCode == 0 ||
+                    (statusCode >= 200 && statusCode < 400)));
+
+              if (buttonGuard) {
+                buttonGuard->setText(originalButtonText);
+                const bool hasProxy =
+                    proxyTypeCombo_ &&
+                    proxyTypeCombo_->currentData().toString() !=
+                        QStringLiteral("none");
+                buttonGuard->setEnabled(hasProxy);
+              }
+
+              if (success) {
+                QMessageBox::information(
+                    this, tr("Connection Test"),
+                    tr("Connection successful.\nHTTP status: %1")
+                        .arg(statusCode == 0 ? tr("OK") : QString::number(statusCode)));
+              } else {
+                const QString errorText = reply->errorString().trimmed().isEmpty()
+                                              ? tr("Unknown network error.")
+                                              : reply->errorString().trimmed();
+                QMessageBox::warning(
+                    this, tr("Connection Test Failed"),
+                    tr("Could not reach Arduino package servers.\n\nStatus: %1\nError: %2")
+                        .arg(statusCode > 0 ? QString::number(statusCode) : tr("n/a"),
+                             errorText));
+              }
+
+              reply->deleteLater();
+              manager->deleteLater();
+            });
   });
 
   connect(proxyTypeCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),

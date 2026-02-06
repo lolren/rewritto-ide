@@ -261,7 +261,8 @@ bool isThemeDark(QString theme) {
     return false;
   }
   if (theme == QStringLiteral("dark") || theme == QStringLiteral("oceanic") ||
-      theme == QStringLiteral("cyber")) {
+      theme == QStringLiteral("cyber") || theme == QStringLiteral("graphite") ||
+      theme == QStringLiteral("nord") || theme == QStringLiteral("everforest")) {
     return true;
   }
   return false;
@@ -2453,9 +2454,10 @@ void MainWindow::wireSignals() {
 	                output_->appendHtml(QString("<span style=\"color:#388e3c;\"><b>%1</b></span>")
 	                                        .arg(tr("Compile finished. Uploading\u2026")));
 	                updateStopActionState();
-	                // Defer starting the upload so QProcess state is guaranteed
-	                // to be NotRunning after the compile `finished` signal.
-	                QTimer::singleShot(0, this, [this, maybeRefreshPorts] {
+	                // Some arduino-cli builds report `finished` slightly before
+	                // QProcess reaches NotRunning; retry briefly instead of failing.
+	                auto retryStartUpload = std::make_shared<std::function<void(int)>>();
+	                *retryStartUpload = [this, maybeRefreshPorts, retryStartUpload](int retriesLeft) {
 	                  if (pendingUploadCancelled_ || cliCancelRequested_) {
 	                    output_->appendLine(tr("Upload cancelled."));
 	                    clearPendingUploadFlow();
@@ -2464,14 +2466,24 @@ void MainWindow::wireSignals() {
 	                    return;
 	                  }
 
-	                  if (!startUploadFromPendingFlow()) {
-	                    output_->appendHtml(QString("<span style=\"color:#d32f2f;\"><b>%1</b></span>")
-	                                            .arg(tr("Upload failed: could not start upload step.")));
-	                    clearPendingUploadFlow();
-	                    updateStopActionState();
-	                    maybeRefreshPorts();
+	                  if (startUploadFromPendingFlow()) {
+	                    return;
 	                  }
-	                });
+
+	                  if (arduinoCli_ && arduinoCli_->isRunning() && retriesLeft > 0) {
+	                    QTimer::singleShot(120, this, [retryStartUpload, retriesLeft] {
+	                      (*retryStartUpload)(retriesLeft - 1);
+	                    });
+	                    return;
+	                  }
+
+	                  output_->appendHtml(QString("<span style=\"color:#d32f2f;\"><b>%1</b></span>")
+	                                          .arg(tr("Upload failed: could not start upload step.")));
+	                  clearPendingUploadFlow();
+	                  updateStopActionState();
+	                  maybeRefreshPorts();
+	                };
+	                QTimer::singleShot(0, this, [retryStartUpload] { (*retryStartUpload)(10); });
 	                return;
 	              }
 
@@ -2479,20 +2491,51 @@ void MainWindow::wireSignals() {
 	              clearPendingUploadFlow();
 	            }
 
-            if (cancelled) {
-              output_->appendLine(tr("Cancelled."));
-            } else {
-	              if (exitCode == 0) {
-	                if (job == CliJobKind::Compile) {
-	                  if (actionJustUpload_) actionJustUpload_->setEnabled(true);
-	                }
-	                output_->appendHtml(QString("<span style=\"color:#388e3c;\"><b>%1</b></span>")
-	                                        .arg(tr("arduino-cli finished successfully.")));
-              } else {
-                output_->appendHtml(QString("<span style=\"color:#d32f2f;\"><b>%1</b></span>")
-                                        .arg(QString("arduino-cli finished with exit code %1.").arg(exitCode)));
-              }
-            }
+	            if (cancelled) {
+	              output_->appendLine(tr("Cancelled."));
+	            } else {
+		              if (exitCode == 0) {
+		                if (job == CliJobKind::Compile) {
+		                  if (actionJustUpload_) actionJustUpload_->setEnabled(true);
+		                }
+		                output_->appendHtml(QString("<span style=\"color:#388e3c;\"><b>%1</b></span>")
+		                                        .arg(tr("arduino-cli finished successfully.")));
+	              } else {
+                if ((job == CliJobKind::Upload ||
+                     job == CliJobKind::UploadUsingProgrammer) &&
+                    pendingUploadFlow_.useInputDir &&
+                    !pendingUploadFlow_.buildPath.trimmed().isEmpty()) {
+                  pendingUploadFlow_.useInputDir = false;
+                  output_->appendHtml(
+                      QString("<span style=\"color:#fbc02d;\"><b>%1</b></span>")
+                          .arg(tr("Upload failed with prebuilt artifacts. Retrying without --input-dir…")));
+                  updateStopActionState();
+
+                  QTimer::singleShot(0, this, [this, maybeRefreshPorts] {
+                    if (pendingUploadCancelled_ || cliCancelRequested_) {
+                      output_->appendLine(tr("Upload cancelled."));
+                      clearPendingUploadFlow();
+                      updateStopActionState();
+                      maybeRefreshPorts();
+                      return;
+                    }
+
+                    if (!startUploadFromPendingFlow()) {
+                      output_->appendHtml(
+                          QString("<span style=\"color:#d32f2f;\"><b>%1</b></span>")
+                              .arg(tr("Upload failed: could not start fallback upload step.")));
+                      clearPendingUploadFlow();
+                      updateStopActionState();
+                      maybeRefreshPorts();
+                    }
+                  });
+                  return;
+                }
+
+	                output_->appendHtml(QString("<span style=\"color:#d32f2f;\"><b>%1</b></span>")
+	                                        .arg(QString("arduino-cli finished with exit code %1.").arg(exitCode)));
+	              }
+	            }
 	            if (job == CliJobKind::Upload ||
 	                job == CliJobKind::UploadUsingProgrammer) {
 	              clearPendingUploadFlow();
@@ -3085,6 +3128,36 @@ void MainWindow::rebuildPortMenu() {
 
   if (actionRefreshPorts_) {
     portMenu_->addAction(actionRefreshPorts_);
+    if (actionSelectBoard_) {
+      portMenu_->addAction(actionSelectBoard_);
+    }
+    if (portCombo_) {
+      const int idx = portCombo_->currentIndex();
+      const QString detectedFqbn =
+          idx >= 0 ? portCombo_->itemData(idx, kPortRoleDetectedFqbn).toString().trimmed()
+                   : QString{};
+      QAction* useDetectedBoard =
+          portMenu_->addAction(tr("Use Detected Board for This Port"));
+      useDetectedBoard->setEnabled(!detectedFqbn.isEmpty());
+      connect(useDetectedBoard, &QAction::triggered, this, [this, detectedFqbn] {
+        if (detectedFqbn.isEmpty()) {
+          return;
+        }
+        if (boardCombo_) {
+          const int boardIndex = boardCombo_->findData(detectedFqbn);
+          if (boardIndex >= 0) {
+            boardCombo_->setCurrentIndex(boardIndex);
+          } else {
+            QSettings settings;
+            settings.beginGroup(kSettingsGroup);
+            settings.setValue(kFqbnKey, detectedFqbn);
+            settings.endGroup();
+          }
+        }
+        updateBoardPortIndicator();
+        showToast(tr("Detected board selected"));
+      });
+    }
     portMenu_->addSeparator();
   }
 
@@ -3431,7 +3504,9 @@ bool MainWindow::startUploadFromPendingFlow() {
     args << "--verbose";
   }
 
-  if (!buildPath.isEmpty() && QDir(buildPath).exists()) {
+  if (pendingUploadFlow_.useInputDir &&
+      !buildPath.isEmpty() &&
+      QDir(buildPath).exists()) {
     args << "--input-dir" << buildPath;
   }
 
@@ -4255,6 +4330,7 @@ void MainWindow::uploadSketch() {
   pendingUploadFlow_.protocol = currentPortProtocol();
   pendingUploadFlow_.verboseCompile = verbose;
   pendingUploadFlow_.verboseUpload = verboseUpload;
+  pendingUploadFlow_.useInputDir = true;
   pendingUploadFlow_.warnings = warningsLevel;
   pendingUploadFlow_.finalJobKind = CliJobKind::Upload;
 
@@ -4340,6 +4416,7 @@ void MainWindow::uploadUsingProgrammer() {
   pendingUploadFlow_.programmer = programmer;
   pendingUploadFlow_.verboseCompile = verboseCompile;
   pendingUploadFlow_.verboseUpload = verboseUpload;
+  pendingUploadFlow_.useInputDir = true;
   pendingUploadFlow_.warnings = warningsLevel;
   pendingUploadFlow_.finalJobKind = CliJobKind::UploadUsingProgrammer;
 

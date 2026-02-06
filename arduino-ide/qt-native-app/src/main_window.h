@@ -527,6 +527,7 @@ class MainWindow final : public QMainWindow {
     QString warnings;
     bool verboseCompile = false;
     bool verboseUpload = false;
+    bool useInputDir = true;
     CliJobKind finalJobKind = CliJobKind::Upload;
   };
   PendingUploadFlow pendingUploadFlow_;

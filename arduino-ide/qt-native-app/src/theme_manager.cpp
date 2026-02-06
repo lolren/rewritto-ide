@@ -1,6 +1,7 @@
 #include "theme_manager.h"
 
 #include <QApplication>
+#include <QColor>
 #include <QGuiApplication>
 #include <QPalette>
 #include <QStyle>
@@ -12,6 +13,25 @@ namespace {
 bool g_inited = false;
 QPalette g_defaultPalette;
 QString g_defaultStyleKey;
+
+struct ThemeSpec final {
+  bool dark = false;
+  QString windowBg;
+  QString text;
+  QString surface;
+  QString surfaceAlt;
+  QString accent;
+  QString border;
+  QString headerBg;
+  QString headerFg;
+  QString hover;
+  QString listSelection;
+  QString separator;
+  QString listSelectionText;
+  QString accentText;
+  QString disabledText;
+  QString alternateBase;
+};
 
 QString normalizeStyleKey(const QString& key) {
   if (key.trimmed().isEmpty()) {
@@ -27,34 +47,272 @@ QString normalizeStyleKey(const QString& key) {
   return {};
 }
 
-// Official Arduino IDE 2.x Color Palette
-// Header Teal: #00878F (slightly darker than accent for better contrast)
-// Accent Teal: #00979C
-// Sidebar/Background Dark: #1e1e1e
-// Sidebar/Background Light: #f5f5f5
-// Activity Bar Dark: #333333
-// Activity Bar Light: #e0e0e0
-// Selection: #00979C
+ThemeSpec lightTheme() {
+  ThemeSpec s;
+  s.dark = false;
+  s.windowBg = "#f6f8fb";
+  s.text = "#0f172a";
+  s.surface = "#ffffff";
+  s.surfaceAlt = "#eef2f7";
+  s.accent = "#0f8f96";
+  s.border = "#d6dde8";
+  s.headerBg = "#0f766e";
+  s.headerFg = "#f8fafc";
+  s.hover = "#e6edf6";
+  s.listSelection = "rgba(15, 143, 150, 0.22)";
+  s.separator = "#dde5f0";
+  s.listSelectionText = "#0f172a";
+  s.accentText = "#ffffff";
+  s.disabledText = "#8b95a7";
+  s.alternateBase = "#f1f5f9";
+  return s;
+}
 
-QString officialArduinoStyle(bool isDark) {
-  const QString bg = isDark ? "#1e1e1e" : "#ffffff";
-  const QString fg = isDark ? "#d4d4d4" : "#111827";
-  const QString sidebarBg = isDark ? "#252526" : "#ffffff";
-  const QString activityBarBg = isDark ? "#333333" : "#f3f4f6";
-  const QString accent = "#00979C";
-  const QString headerBg = "#00878F";
-  const QString headerFg = "#ffffff";
-  const QString hover = isDark ? "#2a2d2e" : "#f3f4f6";
-  const QString border = isDark ? "#3c3c3c" : "#d1d5db";
-  const QString separator = isDark ? "#444444" : "#e5e7eb";
-  const QString treeSel = isDark ? "rgba(0, 151, 156, 0.35)" : "rgba(0, 151, 156, 0.25)";
-  const QString treeFg = isDark ? "#ffffff" : "#111827";
-  const QString selectionFg = isDark ? "#ffffff" : "#062326";
-  const QString disabledFg = isDark ? "#8b949e" : "#6b7280";
-  const QString altBase = isDark ? "#1f2122" : "#f8fafc";
+ThemeSpec darkTheme() {
+  ThemeSpec s;
+  s.dark = true;
+  s.windowBg = "#111827";
+  s.text = "#e5e7eb";
+  s.surface = "#1f2937";
+  s.surfaceAlt = "#182232";
+  s.accent = "#2dd4bf";
+  s.border = "#374151";
+  s.headerBg = "#0b1220";
+  s.headerFg = "#e5e7eb";
+  s.hover = "#2a3648";
+  s.listSelection = "rgba(45, 212, 191, 0.30)";
+  s.separator = "#334155";
+  s.listSelectionText = "#f8fafc";
+  s.accentText = "#022c22";
+  s.disabledText = "#6b7280";
+  s.alternateBase = "#1a2433";
+  return s;
+}
 
+ThemeSpec arduinoTheme() {
+  ThemeSpec s;
+  s.dark = false;
+  s.windowBg = "#ffffff";
+  s.text = "#111827";
+  s.surface = "#ffffff";
+  s.surfaceAlt = "#f3f4f6";
+  s.accent = "#00979c";
+  s.border = "#d1d5db";
+  s.headerBg = "#00878f";
+  s.headerFg = "#ffffff";
+  s.hover = "#eef2f7";
+  s.listSelection = "rgba(0, 151, 156, 0.24)";
+  s.separator = "#e5e7eb";
+  s.listSelectionText = "#111827";
+  s.accentText = "#ffffff";
+  s.disabledText = "#6b7280";
+  s.alternateBase = "#f8fafc";
+  return s;
+}
+
+ThemeSpec oceanicTheme() {
+  ThemeSpec s;
+  s.dark = true;
+  s.windowBg = "#0b1220";
+  s.text = "#dce6f4";
+  s.surface = "#111b2f";
+  s.surfaceAlt = "#0f1a2b";
+  s.accent = "#4ecdc4";
+  s.border = "#2f3f59";
+  s.headerBg = "#11203a";
+  s.headerFg = "#dce6f4";
+  s.hover = "#162640";
+  s.listSelection = "rgba(78, 205, 196, 0.28)";
+  s.separator = "#2a3a54";
+  s.listSelectionText = "#f3f7ff";
+  s.accentText = "#022624";
+  s.disabledText = "#7b8ca6";
+  s.alternateBase = "#102036";
+  return s;
+}
+
+ThemeSpec cyberTheme() {
+  ThemeSpec s;
+  s.dark = true;
+  s.windowBg = "#0a0e17";
+  s.text = "#d8e0ff";
+  s.surface = "#10192b";
+  s.surfaceAlt = "#0d1524";
+  s.accent = "#00d9ff";
+  s.border = "#24304a";
+  s.headerBg = "#111d38";
+  s.headerFg = "#c6f6ff";
+  s.hover = "#19253f";
+  s.listSelection = "rgba(0, 217, 255, 0.24)";
+  s.separator = "#2b3957";
+  s.listSelectionText = "#f8fcff";
+  s.accentText = "#001a22";
+  s.disabledText = "#70809d";
+  s.alternateBase = "#10192a";
+  return s;
+}
+
+ThemeSpec y2kTheme() {
+  ThemeSpec s;
+  s.dark = false;
+  s.windowBg = "#fff7ff";
+  s.text = "#31163f";
+  s.surface = "#ffffff";
+  s.surfaceAlt = "#f9e6ff";
+  s.accent = "#c026d3";
+  s.border = "#ebc4ff";
+  s.headerBg = "#a21caf";
+  s.headerFg = "#ffffff";
+  s.hover = "#f4ddff";
+  s.listSelection = "rgba(192, 38, 211, 0.20)";
+  s.separator = "#efddfb";
+  s.listSelectionText = "#31163f";
+  s.accentText = "#ffffff";
+  s.disabledText = "#9b7cb3";
+  s.alternateBase = "#ffeffc";
+  return s;
+}
+
+ThemeSpec graphiteTheme() {
+  ThemeSpec s;
+  s.dark = true;
+  s.windowBg = "#0f1115";
+  s.text = "#e5e7eb";
+  s.surface = "#171a20";
+  s.surfaceAlt = "#141820";
+  s.accent = "#60a5fa";
+  s.border = "#2a2f3a";
+  s.headerBg = "#151b27";
+  s.headerFg = "#e6edf7";
+  s.hover = "#202734";
+  s.listSelection = "rgba(96, 165, 250, 0.26)";
+  s.separator = "#313845";
+  s.listSelectionText = "#f8fafc";
+  s.accentText = "#081b33";
+  s.disabledText = "#707786";
+  s.alternateBase = "#131923";
+  return s;
+}
+
+ThemeSpec nordTheme() {
+  ThemeSpec s;
+  s.dark = true;
+  s.windowBg = "#2e3440";
+  s.text = "#e5e9f0";
+  s.surface = "#3b4252";
+  s.surfaceAlt = "#353c4a";
+  s.accent = "#88c0d0";
+  s.border = "#4c566a";
+  s.headerBg = "#3a4254";
+  s.headerFg = "#eceff4";
+  s.hover = "#434c5e";
+  s.listSelection = "rgba(136, 192, 208, 0.30)";
+  s.separator = "#566178";
+  s.listSelectionText = "#f2f4f8";
+  s.accentText = "#0f2a33";
+  s.disabledText = "#8f9bb2";
+  s.alternateBase = "#38404f";
+  return s;
+}
+
+ThemeSpec everforestTheme() {
+  ThemeSpec s;
+  s.dark = true;
+  s.windowBg = "#232a2e";
+  s.text = "#d3c6aa";
+  s.surface = "#2d353b";
+  s.surfaceAlt = "#283035";
+  s.accent = "#a7c080";
+  s.border = "#4f5b58";
+  s.headerBg = "#343f44";
+  s.headerFg = "#e6dfc8";
+  s.hover = "#3a454a";
+  s.listSelection = "rgba(167, 192, 128, 0.28)";
+  s.separator = "#56635f";
+  s.listSelectionText = "#f0ead6";
+  s.accentText = "#1d2a14";
+  s.disabledText = "#88908a";
+  s.alternateBase = "#2a3236";
+  return s;
+}
+
+ThemeSpec dawnTheme() {
+  ThemeSpec s;
+  s.dark = false;
+  s.windowBg = "#f8fafc";
+  s.text = "#0f172a";
+  s.surface = "#ffffff";
+  s.surfaceAlt = "#eef2ff";
+  s.accent = "#4f46e5";
+  s.border = "#d1d9e6";
+  s.headerBg = "#312e81";
+  s.headerFg = "#eef2ff";
+  s.hover = "#e5eaf8";
+  s.listSelection = "rgba(79, 70, 229, 0.20)";
+  s.separator = "#dbe2f0";
+  s.listSelectionText = "#0f172a";
+  s.accentText = "#ffffff";
+  s.disabledText = "#7c8596";
+  s.alternateBase = "#f1f5f9";
+  return s;
+}
+
+ThemeSpec resolveTheme(QString theme, bool systemDark, bool* ok) {
+  theme = theme.trimmed().toLower();
+  if (theme.isEmpty()) {
+    theme = QStringLiteral("system");
+  }
+  if (theme == QStringLiteral("system")) {
+    theme = systemDark ? QStringLiteral("dark") : QStringLiteral("light");
+  }
+
+  if (theme == QStringLiteral("light")) {
+    if (ok) *ok = true;
+    return lightTheme();
+  }
+  if (theme == QStringLiteral("dark")) {
+    if (ok) *ok = true;
+    return darkTheme();
+  }
+  if (theme == QStringLiteral("arduino")) {
+    if (ok) *ok = true;
+    return arduinoTheme();
+  }
+  if (theme == QStringLiteral("oceanic")) {
+    if (ok) *ok = true;
+    return oceanicTheme();
+  }
+  if (theme == QStringLiteral("cyber")) {
+    if (ok) *ok = true;
+    return cyberTheme();
+  }
+  if (theme == QStringLiteral("y2k")) {
+    if (ok) *ok = true;
+    return y2kTheme();
+  }
+  if (theme == QStringLiteral("graphite")) {
+    if (ok) *ok = true;
+    return graphiteTheme();
+  }
+  if (theme == QStringLiteral("nord")) {
+    if (ok) *ok = true;
+    return nordTheme();
+  }
+  if (theme == QStringLiteral("everforest")) {
+    if (ok) *ok = true;
+    return everforestTheme();
+  }
+  if (theme == QStringLiteral("dawn")) {
+    if (ok) *ok = true;
+    return dawnTheme();
+  }
+
+  if (ok) *ok = false;
+  return {};
+}
+
+QString buildStyleSheet(const ThemeSpec& t) {
   return QString(R"(
-    /* Global Styles */
     QWidget {
         background-color: %1;
         color: %2;
@@ -70,8 +328,8 @@ QString officialArduinoStyle(bool isDark) {
         background-color: %3;
         color: %2;
         alternate-background-color: %15;
-        selection-background-color: %5;
-        selection-color: %13;
+        selection-background-color: %10;
+        selection-color: %12;
     }
 
     QMainWindow::separator {
@@ -81,12 +339,34 @@ QString officialArduinoStyle(bool isDark) {
     }
 
     QMainWindow::separator:hover {
-        background: %9;
+        background: %5;
         width: 3px;
         height: 3px;
     }
 
-    /* Toolbar (Header) - Arduino IDE 2.x style */
+    QMenuBar {
+        background-color: %7;
+        color: %8;
+        border: none;
+        border-bottom: 1px solid %6;
+        padding: 2px 4px;
+    }
+
+    QMenuBar::item {
+        background: transparent;
+        color: %8;
+        padding: 6px 10px;
+        border-radius: 4px;
+    }
+
+    QMenuBar::item:selected {
+        background-color: rgba(255, 255, 255, 0.16);
+    }
+
+    QMenuBar::item:pressed {
+        background-color: rgba(255, 255, 255, 0.24);
+    }
+
     QToolBar#HeaderToolBar {
         background-color: %7;
         border: none;
@@ -109,17 +389,16 @@ QString officialArduinoStyle(bool isDark) {
     }
 
     QToolBar#HeaderToolBar QToolButton:pressed {
-        background-color: rgba(255, 255, 255, 0.25);
+        background-color: rgba(255, 255, 255, 0.24);
     }
 
     QToolBar#HeaderToolBar QToolButton:checked {
-        background-color: rgba(255, 255, 255, 0.2);
+        background-color: rgba(255, 255, 255, 0.20);
     }
 
     QToolBar#HeaderToolBar QLabel {
         color: %8;
         font-weight: 600;
-        font-size: 12px;
         margin-left: 4px;
         margin-right: 4px;
     }
@@ -130,8 +409,8 @@ QString officialArduinoStyle(bool isDark) {
     }
 
     QToolBar#HeaderToolBar QComboBox {
-        background-color: rgba(255, 255, 255, 0.15);
-        border: 1px solid rgba(255, 255, 255, 0.3);
+        background-color: rgba(255, 255, 255, 0.14);
+        border: 1px solid rgba(255, 255, 255, 0.32);
         border-radius: 4px;
         padding: 4px 24px 4px 8px;
         color: %8;
@@ -139,8 +418,8 @@ QString officialArduinoStyle(bool isDark) {
     }
 
     QToolBar#HeaderToolBar QComboBox:hover {
-        background-color: rgba(255, 255, 255, 0.2);
-        border: 1px solid rgba(255, 255, 255, 0.4);
+        background-color: rgba(255, 255, 255, 0.20);
+        border-color: rgba(255, 255, 255, 0.44);
     }
 
     QToolBar#HeaderToolBar QComboBox::drop-down {
@@ -161,24 +440,30 @@ QString officialArduinoStyle(bool isDark) {
         height: 10px;
     }
 
-    QToolBar#HeaderToolBar QComboBox::drop-down:hover {
-        background-color: rgba(255, 255, 255, 0.1);
-    }
-
     QToolBar#HeaderToolBar QComboBox QAbstractItemView {
         background-color: %3;
         border: 1px solid %6;
+        border-radius: 6px;
+        color: %2;
         selection-background-color: %5;
         selection-color: %13;
-        color: %2;
     }
 
-    /* Activity Bar (Left Vertical Strip) */
+    QToolBar#HeaderToolBar QComboBox QAbstractItemView::item {
+        color: %2;
+        padding: 6px 8px;
+        min-height: 22px;
+    }
+
+    QToolBar#HeaderToolBar QComboBox QAbstractItemView::item:selected {
+        background-color: %5;
+        color: %13;
+    }
+
     QToolBar#ActivityBar {
         background-color: %4;
         border: none;
         border-right: 1px solid %11;
-        padding: 0px;
         spacing: 0px;
         min-width: 48px;
         max-width: 48px;
@@ -197,11 +482,10 @@ QString officialArduinoStyle(bool isDark) {
     }
 
     QToolBar#ActivityBar QToolButton:checked {
-        background-color: rgba(0, 151, 156, 0.15);
+        background-color: %10;
         border-left: 3px solid %5;
     }
 
-    /* Dock Widgets / Sidebar Panels */
     QDockWidget {
         border: none;
         background-color: %3;
@@ -209,35 +493,24 @@ QString officialArduinoStyle(bool isDark) {
 
     QDockWidget::title {
         background-color: %4;
-        padding: 8px 12px;
-        text-transform: none;
-        font-weight: 600;
-        font-size: 13px;
         color: %2;
+        font-weight: 600;
+        padding: 8px 12px;
         border-bottom: 1px solid %11;
     }
 
     QDockWidget::close-button, QDockWidget::float-button {
         background: transparent;
         border: none;
-        padding: 4px;
-        icon-size: 16px;
         border-radius: 4px;
         min-width: 24px;
         min-height: 24px;
-        width: 24px;
-        height: 24px;
     }
 
     QDockWidget::close-button:hover, QDockWidget::float-button:hover {
         background: %9;
     }
 
-    QDockWidget::close-button:pressed, QDockWidget::float-button:pressed {
-        background: rgba(0, 151, 156, 0.25);
-    }
-
-    /* Tabs */
     QTabWidget::pane {
         border: none;
         border-top: 1px solid %11;
@@ -247,11 +520,10 @@ QString officialArduinoStyle(bool isDark) {
     QTabBar::tab {
         background-color: transparent;
         color: %2;
-        padding: 10px 16px;
+        padding: 9px 14px;
         border: none;
         border-right: 1px solid %11;
-        min-width: 100px;
-        margin-top: 0px;
+        min-width: 96px;
     }
 
     QTabBar::tab:selected {
@@ -263,51 +535,14 @@ QString officialArduinoStyle(bool isDark) {
 
     QTabBar::tab:hover:!selected {
         background-color: %9;
-        color: %2;
     }
 
-    QTabBar::tab:first {
-        border-left: none;
-    }
-
-    QTabBar::tab:last {
-        border-right: none;
-    }
-
-    /* Editor Tabs */
-    QTabWidget#EditorTabs QTabBar::tab {
-        background-color: %3;
-        border-top: none;
-        border-bottom: none;
-        border-right: 1px solid %11;
-        padding: 8px 16px;
-        min-width: 120px;
-    }
-
-    QTabWidget#EditorTabs QTabBar::tab:selected {
-        background-color: %1;
-        border-top: 3px solid %5;
-    }
-
-    QTabWidget#EditorTabs QTabBar::close-button {
-        background: transparent;
-        border: none;
-        padding: 2px;
-        border-radius: 3px;
-    }
-
-    QTabWidget#EditorTabs QTabBar::close-button:hover {
-        background: %9;
-    }
-
-    /* Tree/List Views */
     QTreeView, QListView {
         background-color: %3;
         border: none;
-        alternate-background-color: %3;
+        alternate-background-color: %15;
         selection-background-color: %10;
         selection-color: %12;
-        show-decoration-selected: 1;
     }
 
     QTreeView::item, QListView::item {
@@ -315,93 +550,62 @@ QString officialArduinoStyle(bool isDark) {
         min-height: 24px;
     }
 
-    QTreeView::item:hover {
+    QTreeView::item:hover, QListView::item:hover {
         background-color: %9;
     }
 
-    QTreeView::item:selected {
+    QTreeView::item:selected, QListView::item:selected {
         background-color: %10;
         color: %12;
     }
 
-    QTreeView::branch {
-        background: transparent;
-    }
-
-    QTreeView::branch:has-children:!has-siblings:closed,
-    QTreeView::branch:closed:has-children:has-siblings {
-        border-image: none;
-        image: url(:/icons/tree-closed.png);
-    }
-
-    QTreeView::branch:open:has-children:!has-siblings,
-    QTreeView::branch:open:has-children:has-siblings {
-        border-image: none;
-        image: url(:/icons/tree-open.png);
-    }
-
-    /* ScrollBars - Modern Thin Style */
     QScrollBar:vertical {
         background: transparent;
         width: 14px;
-        margin: 0px;
     }
 
     QScrollBar::handle:vertical {
-        background: rgba(128, 128, 128, 0.4);
+        background: rgba(128, 128, 128, 0.45);
         min-height: 30px;
         border-radius: 7px;
         margin: 2px;
     }
 
     QScrollBar::handle:vertical:hover {
-        background: rgba(128, 128, 128, 0.6);
+        background: rgba(128, 128, 128, 0.62);
     }
 
-    QScrollBar::handle:vertical:pressed {
-        background: rgba(128, 128, 128, 0.8);
-    }
-
-    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-        height: 0px;
-    }
-
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
     QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+        height: 0px;
         background: none;
     }
 
     QScrollBar:horizontal {
         background: transparent;
         height: 14px;
-        margin: 0px;
     }
 
     QScrollBar::handle:horizontal {
-        background: rgba(128, 128, 128, 0.4);
+        background: rgba(128, 128, 128, 0.45);
         min-width: 30px;
         border-radius: 7px;
         margin: 2px;
     }
 
     QScrollBar::handle:horizontal:hover {
-        background: rgba(128, 128, 128, 0.6);
+        background: rgba(128, 128, 128, 0.62);
     }
 
-    QScrollBar::handle:horizontal:pressed {
-        background: rgba(128, 128, 128, 0.8);
-    }
-
-    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
-        width: 0px;
-    }
-
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
     QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+        width: 0px;
         background: none;
     }
 
-    /* Editor (Placeholder for CodeEditor) */
     QPlainTextEdit#OutputTextEdit {
         background-color: %1;
+        color: %2;
         border: none;
         font-family: "JetBrains Mono", "Cascadia Code", "Consolas", "Menlo", monospace;
         font-size: 12px;
@@ -414,23 +618,22 @@ QString officialArduinoStyle(bool isDark) {
         selection-color: %13;
     }
 
-    /* Status Bar */
     QStatusBar {
         background-color: %7;
         color: %8;
         border: none;
-        border-top: 1px solid rgba(255, 255, 255, 0.1);
+        border-top: 1px solid rgba(255, 255, 255, 0.10);
         padding: 2px 4px;
     }
 
     QStatusBar QLabel {
         background: transparent;
-        padding: 0 8px;
         color: %8;
+        padding: 0 8px;
     }
 
     QStatusBar QProgressBar {
-        background-color: rgba(0, 0, 0, 0.2);
+        background-color: rgba(0, 0, 0, 0.20);
         border: none;
         border-radius: 3px;
         height: 16px;
@@ -442,7 +645,6 @@ QString officialArduinoStyle(bool isDark) {
         border-radius: 2px;
     }
 
-    /* ComboBox (General) */
     QComboBox {
         background-color: %3;
         border: 1px solid %6;
@@ -453,8 +655,9 @@ QString officialArduinoStyle(bool isDark) {
     }
 
     QComboBox:hover {
-        border: 1px solid %5;
+        border-color: %5;
     }
+
     QComboBox::drop-down {
         border: none;
         width: 24px;
@@ -472,13 +675,34 @@ QString officialArduinoStyle(bool isDark) {
         width: 10px;
         height: 10px;
     }
-    /* Buttons */
+
+    QComboBox QAbstractItemView {
+        background-color: %3;
+        color: %2;
+        border: 1px solid %6;
+        border-radius: 6px;
+        selection-background-color: %5;
+        selection-color: %13;
+    }
+
+    QComboBox QAbstractItemView::item {
+        color: %2;
+        padding: 6px 8px;
+        min-height: 22px;
+    }
+
+    QComboBox QAbstractItemView::item:selected {
+        background-color: %5;
+        color: %13;
+    }
+
     QPushButton {
         background-color: %5;
-        color: white;
+        color: %13;
         border: none;
-        border-radius: 4px;
+        border-radius: 6px;
         padding: 6px 16px;
+        min-height: 24px;
         font-weight: 500;
     }
 
@@ -492,21 +716,9 @@ QString officialArduinoStyle(bool isDark) {
 
     QPushButton:disabled {
         background-color: %9;
-        color: #888;
+        color: %14;
     }
 
-    /* Text Buttons */
-    QPushButton[text-only="true"] {
-        background: transparent;
-        color: %5;
-        border: none;
-    }
-
-    QPushButton[text-only="true"]:hover {
-        background: %9;
-    }
-
-    /* Line Edit */
     QLineEdit {
         background-color: %3;
         border: 1px solid %6;
@@ -522,14 +734,16 @@ QString officialArduinoStyle(bool isDark) {
         padding: 3px 7px;
     }
 
-    /* Menu */
     QMenu {
         background-color: %3;
+        color: %2;
         border: 1px solid %6;
+        border-radius: 8px;
         padding: 4px;
     }
 
     QMenu::item {
+        color: %2;
         padding: 8px 24px;
         border-radius: 4px;
     }
@@ -549,7 +763,6 @@ QString officialArduinoStyle(bool isDark) {
         margin: 4px 8px;
     }
 
-    /* Tooltips */
     QToolTip {
         background-color: %1;
         color: %2;
@@ -558,7 +771,6 @@ QString officialArduinoStyle(bool isDark) {
         border-radius: 4px;
     }
 
-    /* Group Box */
     QGroupBox {
         border: 1px solid %6;
         border-radius: 6px;
@@ -573,10 +785,9 @@ QString officialArduinoStyle(bool isDark) {
         padding: 0 6px;
     }
 
-    /* Table View */
     QTableView {
         background-color: %3;
-        alternate-background-color: %9;
+        alternate-background-color: %15;
         gridline-color: %11;
         selection-background-color: %5;
         selection-color: %13;
@@ -587,11 +798,6 @@ QString officialArduinoStyle(bool isDark) {
         color: %13;
     }
 
-    QTableView QTableCornerButton::section {
-        background-color: %3;
-        border: 1px solid %11;
-    }
-
     QTableView QHeaderView::section {
         background-color: %4;
         color: %2;
@@ -600,11 +806,6 @@ QString officialArduinoStyle(bool isDark) {
         border-right: 1px solid %11;
         border-bottom: 1px solid %11;
         font-weight: 600;
-    }
-
-    /* CheckBox and RadioButton */
-    QCheckBox {
-        spacing: 8px;
     }
 
     QCheckBox::indicator {
@@ -621,10 +822,6 @@ QString officialArduinoStyle(bool isDark) {
         image: url(:/icons/check.png);
     }
 
-    QCheckBox::indicator:hover {
-        border-color: %5;
-    }
-
     QRadioButton::indicator {
         width: 18px;
         height: 18px;
@@ -638,7 +835,6 @@ QString officialArduinoStyle(bool isDark) {
         border-color: %5;
     }
 
-    /* SpinBox */
     QSpinBox, QDoubleSpinBox {
         background-color: %3;
         border: 1px solid %6;
@@ -651,27 +847,6 @@ QString officialArduinoStyle(bool isDark) {
         border: 2px solid %5;
     }
 
-    QSpinBox::up-button, QDoubleSpinBox::up-button,
-    QSpinBox::down-button, QDoubleSpinBox::down-button {
-        background: transparent;
-        border: none;
-        width: 16px;
-    }
-
-    QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
-    QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
-        background: %9;
-    }
-
-    QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-        image: url(:/icons/arrow-up.png);
-    }
-
-    QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-        image: url(:/icons/arrow-down.png);
-    }
-
-    /* Slider */
     QSlider::groove:horizontal {
         height: 6px;
         background: %4;
@@ -686,11 +861,6 @@ QString officialArduinoStyle(bool isDark) {
         margin: -5px 0;
     }
 
-    QSlider::handle:horizontal:hover {
-        background: %6;
-    }
-
-    /* Welcome Widget */
     QWidget#WelcomeWidget {
         background-color: %1;
     }
@@ -700,46 +870,18 @@ QString officialArduinoStyle(bool isDark) {
         background: transparent;
     }
 
-    QWidget#WelcomeWidget QPushButton {
-        background-color: %5;
-        color: white;
-        border: none;
-        border-radius: 4px;
-        padding: 10px 20px;
-        font-weight: 600;
-        min-width: 120px;
-    }
-
-    QWidget#WelcomeWidget QPushButton:hover {
-        background-color: %6;
-    }
-
-    QWidget#WelcomeWidget QPushButton:disabled {
-        background-color: %9;
-        color: #888;
-    }
-
     QWidget#WelcomeWidget QGroupBox {
         border: 1px solid %6;
         border-radius: 8px;
         margin-top: 12px;
         padding-top: 16px;
-        font-weight: 600;
         background-color: %3;
-    }
-
-    QWidget#WelcomeWidget QGroupBox::title {
-        subcontrol-origin: margin;
-        left: 16px;
-        padding: 0 8px;
-        color: %2;
     }
 
     QWidget#WelcomeWidget QListWidget {
         background-color: %1;
         border: none;
         border-radius: 4px;
-        outline: none;
     }
 
     QWidget#WelcomeWidget QListWidget::item {
@@ -754,29 +896,27 @@ QString officialArduinoStyle(bool isDark) {
 
     QWidget#WelcomeWidget QListWidget::item:selected {
         background-color: %5;
-        color: white;
+        color: %13;
     }
 
-    /* Toast Widget */
+    QWidget#WelcomeWidget QPushButton {
+        background-color: %5;
+        color: %13;
+        border-radius: 6px;
+        padding: 10px 20px;
+        min-width: 120px;
+    }
+
     QWidget#ToastWidget {
         background-color: %5;
-        color: white;
+        color: %13;
         border-radius: 8px;
         padding: 16px 24px;
     }
 
-    /* Output Widget */
     QWidget#OutputPanel {
         background-color: %1;
         border: none;
-    }
-
-    QPlainTextEdit#OutputTextEdit {
-        background-color: %1;
-        color: %2;
-        border: none;
-        selection-background-color: %5;
-        selection-color: %13;
     }
 
     QComboBox:disabled, QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {
@@ -786,56 +926,44 @@ QString officialArduinoStyle(bool isDark) {
     QTreeView::item:disabled, QListView::item:disabled, QTableView::item:disabled {
         color: %14;
     }
-  )").arg(bg,
-          fg,
-          sidebarBg,
-          activityBarBg,
-          accent,
-          border,
-          headerBg,
-          headerFg,
-          hover,
-          treeSel,
-          separator,
-          treeFg,
-          selectionFg,
-          disabledFg,
-          altBase);
+  )")
+      .arg(t.windowBg, t.text, t.surface, t.surfaceAlt, t.accent, t.border,
+           t.headerBg, t.headerFg, t.hover, t.listSelection, t.separator,
+           t.listSelectionText, t.accentText, t.disabledText, t.alternateBase);
 }
 
-QPalette arduinoPalette(bool isDark) {
+QPalette buildPalette(const ThemeSpec& t) {
+  const QColor windowColor(t.windowBg);
+  const QColor textColor(t.text);
+  const QColor surfaceColor(t.surface);
+  const QColor altBaseColor(t.alternateBase);
+  const QColor accentColor(t.accent);
+  const QColor accentTextColor(t.accentText);
+  const QColor disabledColor(t.disabledText);
+
   QPalette p;
-  if (isDark) {
-    p.setColor(QPalette::Window, QColor("#1e1e1e"));
-    p.setColor(QPalette::WindowText, QColor("#d4d4d4"));
-    p.setColor(QPalette::Base, QColor("#1e1e1e"));
-    p.setColor(QPalette::AlternateBase, QColor("#252526"));
-    p.setColor(QPalette::ToolTipBase, Qt::white);
-    p.setColor(QPalette::ToolTipText, QColor("#111827"));
-    p.setColor(QPalette::Text, QColor("#d4d4d4"));
-    p.setColor(QPalette::Button, QColor("#252526"));
-    p.setColor(QPalette::ButtonText, QColor("#d4d4d4"));
-    p.setColor(QPalette::BrightText, Qt::red);
-    p.setColor(QPalette::Link, QColor(0, 151, 156));
-    p.setColor(QPalette::Highlight, QColor(0, 151, 156));
-    p.setColor(QPalette::HighlightedText, Qt::white);
-  } else {
-    p.setColor(QPalette::Window, QColor("#ffffff"));
-    p.setColor(QPalette::WindowText, QColor("#111827"));
-    p.setColor(QPalette::Base, QColor("#ffffff"));
-    p.setColor(QPalette::AlternateBase, QColor("#f3f4f6"));
-    p.setColor(QPalette::ToolTipBase, Qt::white);
-    p.setColor(QPalette::ToolTipText, QColor("#111827"));
-    p.setColor(QPalette::Text, QColor("#111827"));
-    p.setColor(QPalette::Button, QColor("#f3f4f6"));
-    p.setColor(QPalette::ButtonText, QColor("#111827"));
-    p.setColor(QPalette::Link, QColor(0, 151, 156));
-    p.setColor(QPalette::Highlight, QColor(0, 151, 156));
-    p.setColor(QPalette::HighlightedText, Qt::white);
-  }
+  p.setColor(QPalette::Window, windowColor);
+  p.setColor(QPalette::WindowText, textColor);
+  p.setColor(QPalette::Base, surfaceColor);
+  p.setColor(QPalette::AlternateBase, altBaseColor);
+  p.setColor(QPalette::ToolTipBase, surfaceColor);
+  p.setColor(QPalette::ToolTipText, textColor);
+  p.setColor(QPalette::Text, textColor);
+  p.setColor(QPalette::Button, surfaceColor);
+  p.setColor(QPalette::ButtonText, textColor);
+  p.setColor(QPalette::BrightText, QColor("#ff4d4f"));
+  p.setColor(QPalette::Link, accentColor);
+  p.setColor(QPalette::Highlight, accentColor);
+  p.setColor(QPalette::HighlightedText, accentTextColor);
+  p.setColor(QPalette::PlaceholderText, disabledColor);
+
+  p.setColor(QPalette::Disabled, QPalette::WindowText, disabledColor);
+  p.setColor(QPalette::Disabled, QPalette::Text, disabledColor);
+  p.setColor(QPalette::Disabled, QPalette::ButtonText, disabledColor);
+  p.setColor(QPalette::Disabled, QPalette::PlaceholderText, disabledColor);
+
   return p;
 }
-
 }  // namespace
 
 void ThemeManager::init() {
@@ -845,46 +973,34 @@ void ThemeManager::init() {
   g_inited = true;
   g_defaultPalette = QApplication::palette();
 
-  const QString styleName = QApplication::style() ? QApplication::style()->objectName() : QString{};
+  const QString styleName =
+      QApplication::style() ? QApplication::style()->objectName() : QString{};
   g_defaultStyleKey = normalizeStyleKey(styleName);
 }
 
 void ThemeManager::apply(const QString& theme) {
   init();
 
-  const QString t = theme.trimmed().toLower();
+  bool systemDark = false;
+  if (QGuiApplication::styleHints()) {
+    systemDark =
+        QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Dark;
+  }
 
-  if (t == "system") {
-    bool dark = false;
-    if (QGuiApplication::styleHints()) {
-      dark = QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Dark;
+  bool ok = false;
+  const ThemeSpec spec = resolveTheme(theme, systemDark, &ok);
+  if (!ok) {
+    qApp->setStyleSheet(QString{});
+    if (!g_defaultStyleKey.isEmpty()) {
+      if (QStyle* style = QStyleFactory::create(g_defaultStyleKey)) {
+        QApplication::setStyle(style);
+      }
     }
-    QApplication::setStyle(QStyleFactory::create("Fusion"));
-    QApplication::setPalette(arduinoPalette(dark));
-    qApp->setStyleSheet(officialArduinoStyle(dark));
+    QApplication::setPalette(g_defaultPalette);
     return;
   }
 
-  if (t == "arduino" || t == "light" || t == "y2k") {
-    QApplication::setStyle(QStyleFactory::create("Fusion"));
-    QApplication::setPalette(arduinoPalette(false));
-    qApp->setStyleSheet(officialArduinoStyle(false));
-    return;
-  }
-
-  if (t == "dark" || t == "oceanic" || t == "cyber") {
-    QApplication::setStyle(QStyleFactory::create("Fusion"));
-    QApplication::setPalette(arduinoPalette(true));
-    qApp->setStyleSheet(officialArduinoStyle(true));
-    return;
-  }
-
-  // Fallback
-  qApp->setStyleSheet(QString{});
-  if (!g_defaultStyleKey.isEmpty()) {
-    if (QStyle* style = QStyleFactory::create(g_defaultStyleKey)) {
-      QApplication::setStyle(style);
-    }
-  }
-  QApplication::setPalette(g_defaultPalette);
+  QApplication::setStyle(QStyleFactory::create("Fusion"));
+  QApplication::setPalette(buildPalette(spec));
+  qApp->setStyleSheet(buildStyleSheet(spec));
 }
