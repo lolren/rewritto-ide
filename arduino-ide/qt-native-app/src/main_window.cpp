@@ -40,6 +40,7 @@
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDockWidget>
 #include <QCompleter>
 #include <QDesktopServices>
@@ -907,15 +908,18 @@ void MainWindow::createActions() {
   actionVerify_->setIcon(QIcon(":/icons/verify.png"));
   actionVerify_->setIconVisibleInMenu(false);
 
-  actionUpload_ = new QAction(tr("Upload"), this);
+  actionUpload_ = new QAction(tr("Verify and Upload"), this);
   actionUpload_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_U));
   actionUpload_->setIcon(QIcon(":/icons/upload.png"));
   actionUpload_->setIconVisibleInMenu(false);
+  actionUpload_->setToolTip(tr("Compile and upload sketch"));
 
-  actionJustUpload_ = new QAction(tr("Upload (Skip Compile)"), this);
+  actionJustUpload_ = new QAction(tr("Upload"), this);
+  actionJustUpload_->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_U));
   actionJustUpload_->setIcon(QIcon(":/icons/upload.png"));
   actionJustUpload_->setIconVisibleInMenu(false);
-  actionJustUpload_->setEnabled(false); // Enable only after compilation
+  actionJustUpload_->setToolTip(tr("Upload prebuilt binary"));
+  actionJustUpload_->setEnabled(false);
 
   actionStop_ = new QAction(tr("Stop"), this);
   actionStop_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Period));
@@ -1094,6 +1098,7 @@ void MainWindow::createMenus() {
   QMenu* sketchMenu = menuBar()->addMenu(tr("&Sketch"));
   sketchMenu->addAction(actionVerify_);
   sketchMenu->addAction(actionUpload_);
+  sketchMenu->addAction(actionJustUpload_);
   sketchMenu->addAction(actionUploadUsingProgrammer_);
   sketchMenu->addAction(actionExportCompiledBinary_);
   sketchMenu->addSeparator();
@@ -1797,6 +1802,7 @@ void MainWindow::createLayout() {
   // Main action buttons
   buildToolBar_->addAction(actionVerify_);
   buildToolBar_->addAction(actionUpload_);
+  buildToolBar_->addAction(actionJustUpload_);
   buildToolBar_->addAction(actionStop_);
   buildToolBar_->addSeparator();
 
@@ -1863,6 +1869,7 @@ void MainWindow::createLayout() {
 
             updateBoardPortIndicator();
             refreshBoardOptions();
+            updateUploadActionStates();
           });
 
   // Connect port combo selection changes
@@ -1913,7 +1920,6 @@ void MainWindow::createLayout() {
   addTodoItem(tr("Snapshot saving"));
   addTodoItem(tr("GitHub upload"));
   addTodoItem(tr("Save into existing project"));
-  addTodoItem(tr("Upload without build (advanced flow)"));
   addTodoItem(tr("Additional board info panel"));
   addTodoItem(tr("Library/core version controls"));
 
@@ -2206,13 +2212,28 @@ void MainWindow::createLayout() {
 
   cliBusyLabel_ = new QLabel(this);
   cliBusyLabel_->setObjectName("CliBusyLabel");
+  cliBusyLabel_->setStyleSheet(
+      "QLabel#CliBusyLabel { font-weight: 600; letter-spacing: 0.2px; }");
   cliBusyLabel_->hide();
   statusBar()->addPermanentWidget(cliBusyLabel_);
 
   cliBusy_ = new QProgressBar(this);
-  cliBusy_->setRange(0, 0);
+  cliBusy_->setRange(0, 100);
+  cliBusy_->setValue(0);
   cliBusy_->setTextVisible(false);
-  cliBusy_->setFixedWidth(120);
+  cliBusy_->setFixedSize(180, 12);
+  cliBusy_->setStyleSheet(
+      "QProgressBar {"
+      "  border: 1px solid rgba(127, 127, 127, 0.35);"
+      "  border-radius: 6px;"
+      "  background: rgba(127, 127, 127, 0.12);"
+      "  padding: 1px;"
+      "}"
+      "QProgressBar::chunk {"
+      "  border-radius: 5px;"
+      "  background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+      "    stop:0 #00a7b5, stop:1 #2dd4bf);"
+      "}");
   cliBusy_->hide();
   statusBar()->addPermanentWidget(cliBusy_);
 
@@ -2423,7 +2444,9 @@ void MainWindow::wireSignals() {
     cliCancelRequested_ = false;
     capturingCliOutput_ = true;
     cliOutputCapture_.clear();
+    beginCliProgress(lastCliJobKind_);
     updateStopActionState();
+    updateUploadActionStates();
 
     compilerDiagnostics_.clear();
     if (editor_) {
@@ -2478,27 +2501,33 @@ void MainWindow::wireSignals() {
 	            if (job == CliJobKind::UploadCompile) {
 	              if (cancelled || uploadCancelled) {
 	                output_->appendLine(tr("Upload cancelled."));
+                  finishCliProgress(false, true);
 	                clearPendingUploadFlow();
 	                updateStopActionState();
+                  updateUploadActionStates();
 	                maybeRefreshPorts();
 	                return;
 	              }
 
 	              if (exitCode == 0) {
-	                if (actionJustUpload_) {
-	                  actionJustUpload_->setEnabled(true);
-	                }
+                  rememberSuccessfulCompileArtifact(
+                      pendingUploadFlow_.sketchFolder, pendingUploadFlow_.fqbn,
+                      pendingUploadFlow_.buildPath);
+                  finishCliProgress(true, false);
 	                output_->appendHtml(QString("<span style=\"color:#388e3c;\"><b>%1</b></span>")
 	                                        .arg(tr("Compile finished. Uploading\u2026")));
 	                updateStopActionState();
+                  updateUploadActionStates();
 	                // Some arduino-cli builds report `finished` slightly before
 	                // QProcess reaches NotRunning; retry briefly instead of failing.
 	                auto retryStartUpload = std::make_shared<std::function<void(int)>>();
 	                *retryStartUpload = [this, maybeRefreshPorts, retryStartUpload](int retriesLeft) {
 	                  if (pendingUploadCancelled_ || cliCancelRequested_) {
 	                    output_->appendLine(tr("Upload cancelled."));
+                      finishCliProgress(false, true);
 	                    clearPendingUploadFlow();
 	                    updateStopActionState();
+                      updateUploadActionStates();
 	                    maybeRefreshPorts();
 	                    return;
 	                  }
@@ -2516,8 +2545,10 @@ void MainWindow::wireSignals() {
 
 	                  output_->appendHtml(QString("<span style=\"color:#d32f2f;\"><b>%1</b></span>")
 	                                          .arg(tr("Upload failed: could not start upload step.")));
+                    finishCliProgress(false, false);
 	                  clearPendingUploadFlow();
 	                  updateStopActionState();
+                    updateUploadActionStates();
 	                  maybeRefreshPorts();
 	                };
 	                QTimer::singleShot(0, this, [retryStartUpload] { (*retryStartUpload)(10); });
@@ -2525,68 +2556,85 @@ void MainWindow::wireSignals() {
 	              }
 
 	              // Compile failed: clear the pending flow so we don't keep stale state.
+                finishCliProgress(false, false);
 	              clearPendingUploadFlow();
 	            }
 
 	            if (cancelled) {
+                finishCliProgress(false, true);
 	              output_->appendLine(tr("Cancelled."));
 	            } else {
 		              if (exitCode == 0) {
-		                if (job == CliJobKind::Compile) {
-		                  if (actionJustUpload_) actionJustUpload_->setEnabled(true);
-		                }
-		                output_->appendHtml(QString("<span style=\"color:#388e3c;\"><b>%1</b></span>")
-		                                        .arg(tr("arduino-cli finished successfully.")));
-	              } else {
-                if ((job == CliJobKind::Upload ||
-                     job == CliJobKind::UploadUsingProgrammer) &&
-                    pendingUploadFlow_.useInputDir &&
-                    !pendingUploadFlow_.buildPath.trimmed().isEmpty()) {
-                  pendingUploadFlow_.useInputDir = false;
-                  output_->appendHtml(
-                      QString("<span style=\"color:#fbc02d;\"><b>%1</b></span>")
-                          .arg(tr("Upload failed with prebuilt artifacts. Retrying without --input-dir…")));
-                  updateStopActionState();
+			                if (job == CliJobKind::Compile) {
+                      const QString buildPath =
+                          QStandardPaths::writableLocation(
+                              QStandardPaths::TempLocation) +
+                          "/rewritto/build";
+                      rememberSuccessfulCompileArtifact(
+                          currentSketchFolderPath(), currentFqbn(), buildPath);
+			                }
+                    finishCliProgress(true, false);
+			                output_->appendHtml(QString("<span style=\"color:#388e3c;\"><b>%1</b></span>")
+			                                        .arg(tr("arduino-cli finished successfully.")));
+		              } else {
+	                if ((job == CliJobKind::Upload ||
+	                     job == CliJobKind::UploadUsingProgrammer) &&
+	                    pendingUploadFlow_.useInputDir &&
+	                    !pendingUploadFlow_.buildPath.trimmed().isEmpty()) {
+	                  pendingUploadFlow_.useInputDir = false;
+                    setCliProgressValue(40, tr("Upload · retrying"));
+	                  output_->appendHtml(
+	                      QString("<span style=\"color:#fbc02d;\"><b>%1</b></span>")
+	                          .arg(tr("Upload failed with prebuilt artifacts. Retrying without --input-dir…")));
+	                  updateStopActionState();
 
-                  QTimer::singleShot(0, this, [this, maybeRefreshPorts] {
-                    if (pendingUploadCancelled_ || cliCancelRequested_) {
-                      output_->appendLine(tr("Upload cancelled."));
-                      clearPendingUploadFlow();
-                      updateStopActionState();
-                      maybeRefreshPorts();
-                      return;
-                    }
+	                  QTimer::singleShot(0, this, [this, maybeRefreshPorts] {
+	                    if (pendingUploadCancelled_ || cliCancelRequested_) {
+	                      output_->appendLine(tr("Upload cancelled."));
+                        finishCliProgress(false, true);
+	                      clearPendingUploadFlow();
+	                      updateStopActionState();
+                        updateUploadActionStates();
+	                      maybeRefreshPorts();
+	                      return;
+	                    }
 
-                    if (!startUploadFromPendingFlow()) {
-                      output_->appendHtml(
-                          QString("<span style=\"color:#d32f2f;\"><b>%1</b></span>")
-                              .arg(tr("Upload failed: could not start fallback upload step.")));
-                      clearPendingUploadFlow();
-                      updateStopActionState();
-                      maybeRefreshPorts();
-                    }
-                  });
-                  return;
-                }
+	                    if (!startUploadFromPendingFlow()) {
+	                      output_->appendHtml(
+	                          QString("<span style=\"color:#d32f2f;\"><b>%1</b></span>")
+	                              .arg(tr("Upload failed: could not start fallback upload step.")));
+                        finishCliProgress(false, false);
+	                      clearPendingUploadFlow();
+	                      updateStopActionState();
+                        updateUploadActionStates();
+	                      maybeRefreshPorts();
+	                    }
+	                  });
+	                  return;
+	                }
 
-                if (job == CliJobKind::Upload && tryUf2UploadFallback(output)) {
-                  clearPendingUploadFlow();
-                  updateStopActionState();
-                  maybeRefreshPorts();
-                  return;
-                }
+	                if (job == CliJobKind::Upload && tryUf2UploadFallback(output)) {
+                  finishCliProgress(true, false);
+	                  clearPendingUploadFlow();
+	                  updateStopActionState();
+                    updateUploadActionStates();
+	                  maybeRefreshPorts();
+	                  return;
+	                }
 
-		                output_->appendHtml(QString("<span style=\"color:#d32f2f;\"><b>%1</b></span>")
-		                                        .arg(QString("arduino-cli finished with exit code %1.").arg(exitCode)));
-		              }
-	            }
-	            if (job == CliJobKind::Upload ||
-	                job == CliJobKind::UploadUsingProgrammer) {
-	              clearPendingUploadFlow();
-	            }
-	            updateStopActionState();
-	            maybeRefreshPorts();
-	          });
+                    finishCliProgress(false, false);
+			                output_->appendHtml(QString("<span style=\"color:#d32f2f;\"><b>%1</b></span>")
+			                                        .arg(QString("arduino-cli finished with exit code %1.").arg(exitCode)));
+			              }
+		            }
+		            if (job == CliJobKind::Upload ||
+		                job == CliJobKind::UploadUsingProgrammer) {
+		              clearPendingUploadFlow();
+		            }
+		            updateStopActionState();
+                updateUploadActionStates();
+		            maybeRefreshPorts();
+		          });
 
   // === Welcome Widget Connections ===
   connect(welcome_, &WelcomeWidget::newSketchRequested, this, [this] {
@@ -2631,6 +2679,7 @@ void MainWindow::wireSignals() {
   connect(editor_, &EditorWidget::currentFileChanged, this, [this](const QString& path) {
     updateWindowTitleForFile(path);
     updateBoardPortIndicator();
+    updateUploadActionStates();
   });
 
   connect(editor_, &EditorWidget::documentOpened, this,
@@ -2650,10 +2699,18 @@ void MainWindow::wireSignals() {
               fileTree_->setRootIndex(root);
               fileTree_->expand(root);
             }
+            updateUploadActionStates();
+          });
+
+  connect(editor_, &EditorWidget::documentChanged, this,
+          [this](const QString& path, const QString&) {
+            markSketchAsChanged(path);
+            updateUploadActionStates();
           });
 
   connect(editor_, &EditorWidget::documentClosed, this, [this](const QString& path) {
     // Document closed - could trigger re-analysis
+    updateUploadActionStates();
   });
 
   connect(editor_, &EditorWidget::breakpointsChanged, this, [this](const QString& path, const QVector<int>& lines) {
@@ -2688,6 +2745,8 @@ void MainWindow::processOutputChunk(const QString& chunk) {
         bool bold = false;
         const QString trimmed = line.trimmed();
         const QString lower = line.toLower();
+
+        updateCliProgressFromOutputLine(line);
 
         if (lower.contains("error:") || lower.contains("fatal error")) {
             color = "#d32f2f"; // Red
@@ -3029,17 +3088,22 @@ void MainWindow::refreshConnectedPorts() {
 
       // Note: arr can be empty if no ports detected, but doc was valid
       if (doc.isObject() || doc.isArray()) {
-        portCombo_->clear();
-        portCombo_->addItem(tr("Select Port..."), QString{});
-
+        const QString selectedBeforeRefresh = currentPort().trimmed();
         QSettings settings;
         settings.beginGroup(kSettingsGroup);
         const QString savedPort = settings.value(kPortKey).toString().trimmed();
         settings.endGroup();
-        int savedIndex = -1;
+        const QString preferredPort = !selectedBeforeRefresh.isEmpty()
+                                           ? selectedBeforeRefresh
+                                           : savedPort;
+
+        const QSignalBlocker blockPortSignals(portCombo_);
+        portCombo_->clear();
+        portCombo_->addItem(tr("Select Port..."), QString{});
+        int preferredIndex = -1;
         
-	        for (const QJsonValue& v : arr) {
-	          const QJsonObject obj = v.toObject();
+		        for (const QJsonValue& v : arr) {
+		          const QJsonObject obj = v.toObject();
 	          const QJsonObject portObj = obj.value("port").toObject();
 	          const QString portAddress = portObj.value("address").toString().trimmed();
 	          const QString protocol = portObj.value("protocol").toString().trimmed();
@@ -3078,32 +3142,46 @@ void MainWindow::refreshConnectedPorts() {
 	              portCombo_->setItemData(addedIndex, boardName,
 	                                      kPortRoleDetectedBoardName);
 	            }
-	            if (!boardFqbn.isEmpty()) {
-	              portCombo_->setItemData(addedIndex, boardFqbn,
-	                                      kPortRoleDetectedFqbn);
-	            }
-	            if (!savedPort.isEmpty() && savedPort == portAddress) {
-	              savedIndex = addedIndex;
+		            if (!boardFqbn.isEmpty()) {
+		              portCombo_->setItemData(addedIndex, boardFqbn,
+		                                      kPortRoleDetectedFqbn);
+		            }
+		            if (!preferredPort.isEmpty() && preferredPort == portAddress) {
+		              preferredIndex = addedIndex;
+		            }
+		          }
+		        }
+
+	        if (preferredIndex < 0 && !preferredPort.isEmpty()) {
+	          const int missingIndex = 1;  // directly under the placeholder
+	          portCombo_->insertItem(missingIndex, tr("%1 (missing)").arg(preferredPort),
+                                   preferredPort);
+	          portCombo_->setItemData(missingIndex, true, kPortRoleMissing);
+	          if (auto* model = qobject_cast<QStandardItemModel*>(portCombo_->model())) {
+	            if (QStandardItem* item = model->item(missingIndex)) {
+	              item->setEnabled(false);
 	            }
 	          }
+	          preferredIndex = missingIndex;
 	        }
 
-        if (savedIndex < 0 && !savedPort.isEmpty()) {
-          const int missingIndex = 1;  // directly under the placeholder
-          portCombo_->insertItem(missingIndex, tr("%1 (missing)").arg(savedPort), savedPort);
-          portCombo_->setItemData(missingIndex, true, kPortRoleMissing);
-          if (auto* model = qobject_cast<QStandardItemModel*>(portCombo_->model())) {
-            if (QStandardItem* item = model->item(missingIndex)) {
-              item->setEnabled(false);
-            }
-          }
-          savedIndex = missingIndex;
-        }
+	        portCombo_->setCurrentIndex(preferredIndex >= 0 ? preferredIndex : 0);
 
-        portCombo_->setCurrentIndex(savedIndex >= 0 ? savedIndex : 0);
-      }
-    }
-    p->deleteLater();
+          const QString selectedAfterRefresh = currentPort().trimmed();
+          QSettings persistedSettings;
+          persistedSettings.beginGroup(kSettingsGroup);
+          if (selectedAfterRefresh.isEmpty()) {
+            persistedSettings.remove(kPortKey);
+          } else {
+            persistedSettings.setValue(kPortKey, selectedAfterRefresh);
+          }
+          persistedSettings.endGroup();
+
+          maybeAutoSelectBoardForCurrentPort();
+          updateBoardPortIndicator();
+	      }
+	    }
+	    p->deleteLater();
   });
 
   const QStringList args =
@@ -3518,6 +3596,7 @@ void MainWindow::setBoardOption(const QString& optionId, const QString& valueId)
 
     refreshBoardOptions();
     updateBoardPortIndicator();
+    updateUploadActionStates();
 }
 void MainWindow::updateSketchbookView() {
   QSettings settings;
@@ -3605,9 +3684,302 @@ bool MainWindow::startUploadFromPendingFlow() {
   arduinoCli_->run(args);
   return true;
 }
+
+void MainWindow::updateUploadActionStates() {
+  if (!actionJustUpload_) {
+    return;
+  }
+  QString reason;
+  const bool canUpload = canUploadWithoutCompile(&reason);
+  const bool busy = arduinoCli_ && arduinoCli_->isRunning();
+  actionJustUpload_->setEnabled(canUpload && !busy);
+  if (canUpload) {
+    actionJustUpload_->setStatusTip(tr("Upload prebuilt binary without compiling"));
+    actionJustUpload_->setToolTip(tr("Upload prebuilt binary"));
+  } else {
+    actionJustUpload_->setStatusTip(reason);
+    actionJustUpload_->setToolTip(reason.isEmpty() ? tr("Upload prebuilt binary")
+                                                   : reason);
+  }
+}
+
+void MainWindow::rememberSuccessfulCompileArtifact(const QString& sketchFolder,
+                                                   const QString& fqbn,
+                                                   const QString& buildPath) {
+  const QString normalizedSketch = normalizeSketchFolderPath(sketchFolder);
+  const QString normalizedFqbn = fqbn.trimmed();
+  const QString normalizedBuildPath = buildPath.trimmed();
+  if (normalizedSketch.isEmpty() || normalizedFqbn.isEmpty() ||
+      normalizedBuildPath.isEmpty()) {
+    return;
+  }
+
+  lastSuccessfulCompile_.sketchFolder = normalizedSketch;
+  lastSuccessfulCompile_.fqbn = normalizedFqbn;
+  lastSuccessfulCompile_.buildPath = QDir(normalizedBuildPath).absolutePath();
+  lastSuccessfulCompile_.sketchSignature =
+      computeSketchSignature(normalizedSketch);
+  lastSuccessfulCompile_.sketchChangedSinceCompile =
+      lastSuccessfulCompile_.sketchSignature.isEmpty();
+}
+
+void MainWindow::markSketchAsChanged(const QString& filePath) {
+  if (lastSuccessfulCompile_.sketchFolder.trimmed().isEmpty()) {
+    return;
+  }
+  const QString changed = QFileInfo(filePath).absoluteFilePath().trimmed();
+  if (changed.isEmpty()) {
+    lastSuccessfulCompile_.sketchChangedSinceCompile = true;
+    return;
+  }
+  const QString sketchRoot =
+      QDir(lastSuccessfulCompile_.sketchFolder).absolutePath();
+  const QString sketchPrefix = sketchRoot + QDir::separator();
+  if (changed == sketchRoot || changed.startsWith(sketchPrefix)) {
+    lastSuccessfulCompile_.sketchChangedSinceCompile = true;
+  }
+}
+
+QString MainWindow::computeSketchSignature(const QString& sketchFolder) const {
+  const QString normalizedSketch = normalizeSketchFolderPath(sketchFolder);
+  if (normalizedSketch.isEmpty()) {
+    return {};
+  }
+
+  QDir root(normalizedSketch);
+  if (!root.exists()) {
+    return {};
+  }
+
+  QStringList relativePaths;
+  QDirIterator it(normalizedSketch, QDir::Files, QDirIterator::Subdirectories);
+  while (it.hasNext()) {
+    const QString absolute = it.next();
+    const QFileInfo info(absolute);
+    if (!info.exists() || !info.isFile()) {
+      continue;
+    }
+    const QString relative = root.relativeFilePath(absolute);
+    if (relative.startsWith(QStringLiteral("."))) {
+      continue;
+    }
+    relativePaths.append(relative);
+  }
+
+  std::sort(relativePaths.begin(), relativePaths.end());
+  QCryptographicHash hasher(QCryptographicHash::Sha256);
+  for (const QString& relative : relativePaths) {
+    const QFileInfo info(root.filePath(relative));
+    if (!info.exists() || !info.isFile()) {
+      continue;
+    }
+    QByteArray data = relative.toUtf8();
+    data.append('\n');
+    data.append(QByteArray::number(info.size()));
+    data.append('\n');
+    data.append(
+        QByteArray::number(info.lastModified().toMSecsSinceEpoch()));
+    data.append('\n');
+    hasher.addData(data);
+  }
+  return QString::fromLatin1(hasher.result().toHex());
+}
+
+bool MainWindow::canUploadWithoutCompile(QString* reason) const {
+  auto fail = [&](const QString& why) {
+    if (reason) {
+      *reason = why;
+    }
+    return false;
+  };
+
+  const QString sketchFolder = currentSketchFolderPath();
+  const QString fqbn = currentFqbn().trimmed();
+  if (sketchFolder.isEmpty()) {
+    return fail(tr("Open a sketch first."));
+  }
+  if (fqbn.isEmpty()) {
+    return fail(tr("Select a board first."));
+  }
+  if (lastSuccessfulCompile_.sketchFolder.trimmed().isEmpty() ||
+      lastSuccessfulCompile_.buildPath.trimmed().isEmpty()) {
+    return fail(tr("Run Verify first to build a binary."));
+  }
+  if (!QDir(lastSuccessfulCompile_.buildPath).exists()) {
+    return fail(tr("Compiled binary is no longer available. Verify again."));
+  }
+  if (QDir(sketchFolder).absolutePath() !=
+      QDir(lastSuccessfulCompile_.sketchFolder).absolutePath()) {
+    return fail(tr("Current sketch differs from the last verified sketch."));
+  }
+  if (fqbn != lastSuccessfulCompile_.fqbn.trimmed()) {
+    return fail(tr("Selected board differs from the last verified build."));
+  }
+  if (editor_ && editor_->hasUnsavedChanges()) {
+    return fail(tr("Unsaved changes detected. Save and verify again."));
+  }
+  if (lastSuccessfulCompile_.sketchChangedSinceCompile) {
+    return fail(tr("Sketch changed since last successful verify."));
+  }
+  const QString currentSignature = computeSketchSignature(sketchFolder);
+  if (currentSignature.isEmpty() ||
+      currentSignature != lastSuccessfulCompile_.sketchSignature) {
+    return fail(tr("Sketch files changed since last successful verify."));
+  }
+  if (reason) {
+    reason->clear();
+  }
+  return true;
+}
+
+void MainWindow::beginCliProgress(CliJobKind job) {
+  if (!cliBusy_ || !cliBusyLabel_) {
+    return;
+  }
+  currentCliPhaseText_ = cliJobLabel(job);
+  if (currentCliPhaseText_.isEmpty()) {
+    currentCliPhaseText_ = tr("CLI");
+  }
+  cliBusy_->setRange(0, 100);
+  setCliProgressValue(6, tr("%1 · preparing").arg(currentCliPhaseText_));
+  cliBusyLabel_->show();
+  cliBusy_->show();
+}
+
+void MainWindow::updateCliProgressFromOutputLine(const QString& line) {
+  if (!cliBusy_ || !cliBusyLabel_ || line.trimmed().isEmpty()) {
+    return;
+  }
+
+  const CliJobKind job = lastCliJobKind_;
+  if (job == CliJobKind::None) {
+    return;
+  }
+
+  const QString base =
+      currentCliPhaseText_.isEmpty() ? cliJobLabel(job) : currentCliPhaseText_;
+  const QString lower = line.trimmed().toLower();
+  auto setPhase = [this, &base](int value, const QString& phase) {
+    setCliProgressValue(value, tr("%1 · %2").arg(base, phase));
+  };
+
+  if (job == CliJobKind::Compile || job == CliJobKind::UploadCompile) {
+    if (lower.contains("compiling sketch")) {
+      setPhase(18, tr("compiling sketch"));
+    } else if (lower.startsWith("compiling ") ||
+               lower.contains("compiling libraries")) {
+      setPhase(38, tr("compiling libraries"));
+    } else if (lower.contains("archiving")) {
+      setPhase(58, tr("archiving"));
+    } else if (lower.contains("linking")) {
+      setPhase(76, tr("linking"));
+    } else if (lower.startsWith("sketch uses") ||
+               lower.startsWith("global variables")) {
+      setPhase(92, tr("finalizing"));
+    }
+    return;
+  }
+
+  if (job == CliJobKind::Upload || job == CliJobKind::UploadUsingProgrammer ||
+      job == CliJobKind::BurnBootloader) {
+    if (lower.startsWith("waiting for upload port")) {
+      setPhase(28, tr("waiting for port"));
+      return;
+    }
+    if (lower.startsWith("uploading")) {
+      setPhase(45, tr("uploading"));
+      return;
+    }
+    static const QRegularExpression percentPattern(
+        QStringLiteral("(\\d{1,3})%"));
+    const QRegularExpressionMatch match = percentPattern.match(lower);
+    if (match.hasMatch()) {
+      const int rawPercent =
+          qBound(0, match.captured(1).toInt(), 100);
+      const int mapped = 45 + static_cast<int>(rawPercent * 0.5);
+      setPhase(mapped, tr("flashing"));
+      return;
+    }
+    if (lower.contains("hash of data verified") ||
+        lower.contains("verifying")) {
+      setPhase(96, tr("verifying"));
+      return;
+    }
+    if (lower.contains("hard resetting") || lower.contains("success")) {
+      setPhase(100, tr("finalizing"));
+    }
+  }
+}
+
+void MainWindow::finishCliProgress(bool success, bool cancelled) {
+  if (!cliBusy_ || !cliBusyLabel_) {
+    return;
+  }
+  const QString base =
+      currentCliPhaseText_.isEmpty() ? tr("CLI") : currentCliPhaseText_;
+  if (cancelled) {
+    setCliProgressValue(0, tr("%1 · cancelled").arg(base));
+  } else if (success) {
+    setCliProgressValue(100, tr("%1 · done").arg(base));
+  } else {
+    setCliProgressValue(qMax(cliBusy_->value(), 12),
+                        tr("%1 · failed").arg(base));
+  }
+
+  currentCliPhaseText_.clear();
+  QTimer::singleShot(1200, this, [this] {
+    if (arduinoCli_ && arduinoCli_->isRunning()) {
+      return;
+    }
+    if (cliBusy_) {
+      cliBusy_->hide();
+    }
+    if (cliBusyLabel_) {
+      cliBusyLabel_->hide();
+    }
+  });
+}
+
+void MainWindow::setCliProgressValue(int value, const QString& phaseText) {
+  if (!cliBusy_) {
+    return;
+  }
+  const int bounded = qBound(0, value, 100);
+  if (bounded >= cliBusy_->value() || bounded <= 6) {
+    cliBusy_->setValue(bounded);
+  }
+  if (cliBusyLabel_ && !phaseText.trimmed().isEmpty()) {
+    cliBusyLabel_->setText(phaseText);
+  }
+}
+
+QString MainWindow::cliJobLabel(CliJobKind job) const {
+  switch (job) {
+    case CliJobKind::Compile:
+      return tr("Verify");
+    case CliJobKind::UploadCompile:
+      return tr("Verify and Upload");
+    case CliJobKind::Upload:
+      return tr("Upload");
+    case CliJobKind::UploadUsingProgrammer:
+      return tr("Upload with Programmer");
+    case CliJobKind::BurnBootloader:
+      return tr("Burn Bootloader");
+    case CliJobKind::IndexUpdate:
+      return tr("Updating Index");
+    case CliJobKind::DebugCheck:
+      return tr("Debug Check");
+    case CliJobKind::LibraryInstall:
+      return tr("Library Install");
+    default:
+      break;
+  }
+  return {};
+}
+
 void MainWindow::updateStopActionState() {
+  const bool busy = arduinoCli_ && arduinoCli_->isRunning();
   if (actionStop_) {
-    const bool busy = arduinoCli_ && arduinoCli_->isRunning();
     actionStop_->setEnabled(busy);
     if (buildToolBar_) {
       if (QWidget* w = buildToolBar_->widgetForAction(actionStop_)) {
@@ -3615,6 +3987,7 @@ void MainWindow::updateStopActionState() {
       }
     }
   }
+  updateUploadActionStates();
 }
 void MainWindow::refreshOutline() {
   if (!lsp_ || !lsp_->isReady() || !editor_) return;
@@ -3813,6 +4186,7 @@ bool MainWindow::openSketchFolderInUi(const QString& folder) {
     actionPinSketch_->setChecked(isSketchPinned(sketchFolder));
   }
 
+  updateUploadActionStates();
   updateWelcomeVisibility();
   return true;
 }
@@ -4507,6 +4881,18 @@ void MainWindow::fastUploadSketch() {
     return;
   }
 
+  QString uploadReason;
+  if (!canUploadWithoutCompile(&uploadReason)) {
+    QMessageBox::information(
+        this, tr("Upload Requires Verify"),
+        uploadReason.isEmpty()
+            ? tr("Verify the sketch before uploading without compile.")
+            : uploadReason + QStringLiteral("\n\n") +
+                  tr("Run Verify or Verify and Upload first."));
+    updateUploadActionStates();
+    return;
+  }
+
   const QString fqbn = currentFqbn().trimmed();
   if (fqbn.isEmpty()) {
     QMessageBox::warning(this, tr("No Board Selected"),
@@ -4535,7 +4921,7 @@ void MainWindow::fastUploadSketch() {
     outputDock_->show();
     outputDock_->raise();
   }
-  output_->appendHtml(QString("<b>%1</b>").arg(tr("Uploading binary (skipping compile)...")));
+  output_->appendHtml(QString("<b>%1</b>").arg(tr("Uploading prebuilt binary...")));
   updateStopActionState();
 
   QSettings settings;
@@ -4543,28 +4929,15 @@ void MainWindow::fastUploadSketch() {
   const bool verboseUpload = settings.value("verboseUpload", false).toBool();
   settings.endGroup();
 
-  QString buildPath;
-  QDir buildDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
-                "/rewritto/build");
-  if (buildDir.exists()) {
-    buildPath = buildDir.absolutePath();
-  } else {
-    QDir uploadDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
-                   "/rewritto/upload");
-    if (uploadDir.exists()) {
-      buildPath = uploadDir.absolutePath();
-    }
-  }
-
   clearPendingUploadFlow();
   pendingUploadFlow_.sketchFolder = sketchFolder;
-  pendingUploadFlow_.buildPath = buildPath;
+  pendingUploadFlow_.buildPath = lastSuccessfulCompile_.buildPath;
   pendingUploadFlow_.fqbn = fqbn;
   pendingUploadFlow_.port = selectedPort;
   pendingUploadFlow_.protocol =
       selectedPort.isEmpty() ? QString{} : currentPortProtocol();
   pendingUploadFlow_.verboseUpload = verboseUpload;
-  pendingUploadFlow_.useInputDir = !buildPath.isEmpty();
+  pendingUploadFlow_.useInputDir = true;
   pendingUploadFlow_.allowMissingPort = allowMissingPort;
   pendingUploadFlow_.uf2FallbackAttempted = false;
   pendingUploadFlow_.finalJobKind = CliJobKind::Upload;

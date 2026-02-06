@@ -385,6 +385,18 @@ class MainWindow final : public QMainWindow {
   void updateBoardPortIndicator();
   void clearPendingUploadFlow();
   bool startUploadFromPendingFlow();
+  void updateUploadActionStates();
+  void rememberSuccessfulCompileArtifact(const QString& sketchFolder,
+                                         const QString& fqbn,
+                                         const QString& buildPath);
+  void markSketchAsChanged(const QString& filePath);
+  QString computeSketchSignature(const QString& sketchFolder) const;
+  bool canUploadWithoutCompile(QString* reason = nullptr) const;
+  void beginCliProgress(CliJobKind job);
+  void updateCliProgressFromOutputLine(const QString& line);
+  void finishCliProgress(bool success, bool cancelled);
+  void setCliProgressValue(int value, const QString& phaseText = {});
+  QString cliJobLabel(CliJobKind job) const;
   bool hasBackgroundWork() const;
   QString busyStatusText() const;
   void showToast(const QString& message, int timeoutMs = 5000);
@@ -543,6 +555,15 @@ class MainWindow final : public QMainWindow {
   };
   PendingUploadFlow pendingUploadFlow_;
   QTemporaryDir* uploadBuildDir_ = nullptr;
+  struct LastSuccessfulCompile final {
+    QString sketchFolder;
+    QString fqbn;
+    QString buildPath;
+    QString sketchSignature;
+    bool sketchChangedSinceCompile = true;
+  };
+  LastSuccessfulCompile lastSuccessfulCompile_;
+  QString currentCliPhaseText_;
 
   QTimer* serialReconnectTimer_ = nullptr;
   SerialClientKind serialDesiredClient_ = SerialClientKind::None;

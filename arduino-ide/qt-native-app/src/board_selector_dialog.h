@@ -4,10 +4,11 @@
 #include <QVector>
 
 class QLineEdit;
+class QModelIndex;
 class QPushButton;
 class QSortFilterProxyModel;
 class QStandardItemModel;
-class QTableView;
+class QTreeView;
 
 class BoardSelectorDialog final : public QDialog {
   Q_OBJECT
@@ -29,12 +30,13 @@ class BoardSelectorDialog final : public QDialog {
   void favoriteToggled(QString fqbn);
 
  private:
+  QString fqbnForProxyIndex(const QModelIndex& proxyIndex) const;
+
   QString currentFqbn_;
   QLineEdit* filterEdit_ = nullptr;
-  QTableView* table_ = nullptr;
+  QTreeView* table_ = nullptr;
   QStandardItemModel* model_ = nullptr;
   QSortFilterProxyModel* proxy_ = nullptr;
   QPushButton* selectButton_ = nullptr;
   QPushButton* cancelButton_ = nullptr;
 };
-
