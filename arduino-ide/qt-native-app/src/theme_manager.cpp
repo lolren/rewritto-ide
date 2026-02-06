@@ -1,5 +1,8 @@
 #include "theme_manager.h"
 
+#include <algorithm>
+#include <cmath>
+
 #include <QApplication>
 #include <QColor>
 #include <QGuiApplication>
@@ -45,6 +48,138 @@ QString normalizeStyleKey(const QString& key) {
     }
   }
   return {};
+}
+
+double linearizeChannel(double value) {
+  if (value <= 0.04045) {
+    return value / 12.92;
+  }
+  return std::pow((value + 0.055) / 1.055, 2.4);
+}
+
+double relativeLuminance(const QColor& color) {
+  const double r = linearizeChannel(color.redF());
+  const double g = linearizeChannel(color.greenF());
+  const double b = linearizeChannel(color.blueF());
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+double contrastRatio(const QColor& first, const QColor& second) {
+  const double l1 = relativeLuminance(first);
+  const double l2 = relativeLuminance(second);
+  const double lighter = std::max(l1, l2);
+  const double darker = std::min(l1, l2);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+QColor blend(const QColor& first, const QColor& second, double secondWeight) {
+  const double w = std::clamp(secondWeight, 0.0, 1.0);
+  const double inv = 1.0 - w;
+  return QColor::fromRgbF(first.redF() * inv + second.redF() * w,
+                          first.greenF() * inv + second.greenF() * w,
+                          first.blueF() * inv + second.blueF() * w,
+                          first.alphaF() * inv + second.alphaF() * w);
+}
+
+QString toHex(const QColor& color) {
+  return color.name(QColor::HexRgb);
+}
+
+QColor readableCandidate(const QColor& background, const QColor& preferred) {
+  const QColor light(QStringLiteral("#f8fafc"));
+  const QColor dark(QStringLiteral("#0f172a"));
+  const double preferredContrast = contrastRatio(preferred, background);
+  const double lightContrast = contrastRatio(light, background);
+  const double darkContrast = contrastRatio(dark, background);
+  if (preferredContrast >= lightContrast && preferredContrast >= darkContrast) {
+    return preferred;
+  }
+  return lightContrast >= darkContrast ? light : dark;
+}
+
+QColor ensureMinContrast(const QColor& foreground, const QColor& background,
+                         double minContrast) {
+  QColor result = foreground;
+  if (contrastRatio(result, background) >= minContrast) {
+    return result;
+  }
+
+  const QColor candidate = readableCandidate(background, foreground);
+  if (contrastRatio(candidate, background) >= minContrast) {
+    return candidate;
+  }
+
+  const QColor towardLight(QStringLiteral("#f8fafc"));
+  const QColor towardDark(QStringLiteral("#0f172a"));
+  const bool preferLight =
+      contrastRatio(towardLight, background) >= contrastRatio(towardDark, background);
+  const QColor anchor = preferLight ? towardLight : towardDark;
+  for (int step = 1; step <= 10; ++step) {
+    const double weight = static_cast<double>(step) / 10.0;
+    const QColor mixed = blend(foreground, anchor, weight);
+    if (contrastRatio(mixed, background) >= minContrast) {
+      return mixed;
+    }
+  }
+  return candidate;
+}
+
+ThemeSpec normalizedTheme(ThemeSpec input) {
+  QColor window(input.windowBg);
+  QColor surface(input.surface);
+  QColor surfaceAlt(input.surfaceAlt);
+  QColor accent(input.accent);
+  QColor border(input.border);
+  QColor headerBg(input.headerBg);
+
+  if (!window.isValid()) window = QColor(QStringLiteral("#f6f8fb"));
+  if (!surface.isValid()) surface = QColor(QStringLiteral("#ffffff"));
+  if (!surfaceAlt.isValid()) surfaceAlt = blend(surface, window, 0.18);
+  if (!accent.isValid()) accent = QColor(QStringLiteral("#0f8f96"));
+  if (!border.isValid()) border = blend(surface, QColor(QStringLiteral("#0f172a")), 0.22);
+  if (!headerBg.isValid()) headerBg = blend(window, accent, 0.58);
+
+  const bool darkTheme = input.dark;
+  if (headerBg.lightnessF() > 0.45) {
+    headerBg = blend(headerBg, QColor(QStringLiteral("#0b1220")), darkTheme ? 0.34 : 0.50);
+  }
+
+  const QColor text =
+      ensureMinContrast(QColor(input.text), window, 7.0);
+  const QColor headerFg =
+      ensureMinContrast(QColor(input.headerFg), headerBg, 7.0);
+  const QColor accentText =
+      ensureMinContrast(QColor(input.accentText), accent, 4.5);
+
+  const QColor hover = blend(surface, accent, darkTheme ? 0.22 : 0.14);
+  const QColor selection = blend(surface, accent, darkTheme ? 0.42 : 0.30);
+  const QColor selectionText =
+      ensureMinContrast(QColor(input.listSelectionText), selection, 7.0);
+  const QColor separator = blend(border, text, darkTheme ? 0.30 : 0.20);
+  const QColor disabled = blend(text, window, darkTheme ? 0.50 : 0.58);
+
+  const QColor resolvedBorder = contrastRatio(border, surface) >= 2.0
+                                    ? border
+                                    : blend(surface, text, darkTheme ? 0.34 : 0.24);
+  const QColor resolvedSurfaceAlt = blend(surfaceAlt, window, darkTheme ? 0.10 : 0.08);
+  const QColor resolvedAltBase = blend(surface, window, darkTheme ? 0.22 : 0.10);
+
+  input.windowBg = toHex(window);
+  input.surface = toHex(surface);
+  input.surfaceAlt = toHex(resolvedSurfaceAlt);
+  input.text = toHex(text);
+  input.accent = toHex(accent);
+  input.accentText = toHex(accentText);
+  input.headerBg = toHex(headerBg);
+  input.headerFg = toHex(headerFg);
+  input.border = toHex(resolvedBorder);
+  input.hover = toHex(hover);
+  input.listSelection = toHex(selection);
+  input.listSelectionText = toHex(selectionText);
+  input.separator = toHex(separator);
+  input.disabledText = toHex(disabled);
+  input.alternateBase = toHex(resolvedAltBase);
+  return input;
 }
 
 ThemeSpec lightTheme() {
@@ -387,6 +522,37 @@ ThemeSpec resolveTheme(QString theme, bool systemDark, bool* ok) {
 }
 
 QString buildStyleSheet(const ThemeSpec& t) {
+  const QColor headerBg(t.headerBg);
+  const QColor headerFg(t.headerFg);
+  const QColor accent(t.accent);
+  const QColor text(t.text);
+  const QColor window(t.windowBg);
+
+  const QColor menuItemHover = blend(headerBg, headerFg, 0.22);
+  const QColor menuItemPressed = blend(headerBg, headerFg, 0.32);
+  const QColor headerButtonHover = blend(headerBg, headerFg, 0.18);
+  const QColor headerButtonPressed = blend(headerBg, headerFg, 0.28);
+  const QColor headerButtonChecked = blend(headerBg, headerFg, 0.24);
+  const QColor headerComboBackground = blend(headerBg, headerFg, 0.16);
+  const QColor headerComboBorder = blend(headerBg, headerFg, 0.35);
+  const QColor headerComboHover = blend(headerBg, headerFg, 0.24);
+  const QColor statusProgressTrack = blend(headerBg, window, t.dark ? 0.55 : 0.40);
+
+  const QString headerArrowIcon =
+      relativeLuminance(headerFg) >= 0.42
+          ? QStringLiteral(":/icons/arrow-down.png")
+          : QStringLiteral(":/icons/arrow-down-light.png");
+  const QString comboArrowIcon =
+      relativeLuminance(text) >= 0.42
+          ? QStringLiteral(":/icons/arrow-down.png")
+          : QStringLiteral(":/icons/arrow-down-light.png");
+  const QColor checkMarkColor =
+      ensureMinContrast(QColor(t.accentText), accent, 4.5);
+  const QString checkIcon =
+      relativeLuminance(checkMarkColor) >= 0.42
+          ? QStringLiteral(":/icons/check-dark.svg")
+          : QStringLiteral(":/icons/check.png");
+
   return QString(R"(
     QWidget {
         background-color: %1;
@@ -437,11 +603,11 @@ QString buildStyleSheet(const ThemeSpec& t) {
     }
 
     QMenuBar::item:selected {
-        background-color: rgba(255, 255, 255, 0.16);
+        background-color: %16;
     }
 
     QMenuBar::item:pressed {
-        background-color: rgba(255, 255, 255, 0.24);
+        background-color: %17;
     }
 
     QToolBar#HeaderToolBar {
@@ -464,15 +630,15 @@ QString buildStyleSheet(const ThemeSpec& t) {
     }
 
     QToolBar#HeaderToolBar QToolButton:hover {
-        background-color: rgba(255, 255, 255, 0.15);
+        background-color: %18;
     }
 
     QToolBar#HeaderToolBar QToolButton:pressed {
-        background-color: rgba(255, 255, 255, 0.24);
+        background-color: %19;
     }
 
     QToolBar#HeaderToolBar QToolButton:checked {
-        background-color: rgba(255, 255, 255, 0.20);
+        background-color: %20;
     }
 
     QToolBar#HeaderToolBar QLabel {
@@ -488,8 +654,8 @@ QString buildStyleSheet(const ThemeSpec& t) {
     }
 
     QToolBar#HeaderToolBar QComboBox {
-        background-color: rgba(255, 255, 255, 0.14);
-        border: 1px solid rgba(255, 255, 255, 0.32);
+        background-color: %21;
+        border: 1px solid %22;
         border-radius: 4px;
         padding: 4px 24px 4px 8px;
         color: %8;
@@ -497,8 +663,8 @@ QString buildStyleSheet(const ThemeSpec& t) {
     }
 
     QToolBar#HeaderToolBar QComboBox:hover {
-        background-color: rgba(255, 255, 255, 0.20);
-        border-color: rgba(255, 255, 255, 0.44);
+        background-color: %23;
+        border-color: %24;
     }
 
     QToolBar#HeaderToolBar QComboBox::drop-down {
@@ -514,7 +680,7 @@ QString buildStyleSheet(const ThemeSpec& t) {
     }
 
     QToolBar#HeaderToolBar QComboBox::down-arrow {
-        image: url(:/icons/arrow-down-light.png);
+        image: url(%25);
         width: 10px;
         height: 10px;
     }
@@ -714,7 +880,7 @@ QString buildStyleSheet(const ThemeSpec& t) {
     }
 
     QStatusBar QProgressBar {
-        background-color: rgba(0, 0, 0, 0.20);
+        background-color: %26;
         border: none;
         border-radius: 3px;
         height: 16px;
@@ -752,7 +918,7 @@ QString buildStyleSheet(const ThemeSpec& t) {
     }
 
     QComboBox::down-arrow {
-        image: url(:/icons/arrow-down.png);
+        image: url(%27);
         width: 10px;
         height: 10px;
     }
@@ -906,7 +1072,7 @@ QString buildStyleSheet(const ThemeSpec& t) {
     QCheckBox::indicator:checked {
         background-color: %5;
         border-color: %5;
-        image: url(:/icons/check.png);
+        image: url(%28);
     }
 
     QRadioButton::indicator {
@@ -1016,7 +1182,12 @@ QString buildStyleSheet(const ThemeSpec& t) {
   )")
       .arg(t.windowBg, t.text, t.surface, t.surfaceAlt, t.accent, t.border,
            t.headerBg, t.headerFg, t.hover, t.listSelection, t.separator,
-           t.listSelectionText, t.accentText, t.disabledText, t.alternateBase);
+           t.listSelectionText, t.accentText, t.disabledText, t.alternateBase,
+           toHex(menuItemHover), toHex(menuItemPressed), toHex(headerButtonHover),
+           toHex(headerButtonPressed), toHex(headerButtonChecked),
+           toHex(headerComboBackground), toHex(headerComboBorder),
+           toHex(headerComboHover), toHex(blend(headerComboBorder, headerFg, 0.35)),
+           headerArrowIcon, toHex(statusProgressTrack), comboArrowIcon, checkIcon);
 }
 
 QPalette buildPalette(const ThemeSpec& t) {
@@ -1075,7 +1246,7 @@ void ThemeManager::apply(const QString& theme) {
   }
 
   bool ok = false;
-  const ThemeSpec spec = resolveTheme(theme, systemDark, &ok);
+  ThemeSpec spec = resolveTheme(theme, systemDark, &ok);
   if (!ok) {
     qApp->setStyleSheet(QString{});
     if (!g_defaultStyleKey.isEmpty()) {
@@ -1086,6 +1257,8 @@ void ThemeManager::apply(const QString& theme) {
     QApplication::setPalette(g_defaultPalette);
     return;
   }
+
+  spec = normalizedTheme(spec);
 
   QApplication::setStyle(QStyleFactory::create("Fusion"));
   QApplication::setPalette(buildPalette(spec));
