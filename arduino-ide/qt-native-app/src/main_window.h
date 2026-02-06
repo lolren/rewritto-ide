@@ -383,6 +383,10 @@ class MainWindow final : public QMainWindow {
                                    QString* outError) const;
   bool tryUf2UploadFallback(const QString& cliOutput);
   void updateBoardPortIndicator();
+  QString sketchSelectionKey(const QString& sketchFolder) const;
+  QString preferredFqbnForSketch(const QString& sketchFolder) const;
+  void storeFqbnForCurrentSketch(const QString& fqbn);
+  void applyPreferredFqbnForSketch(const QString& sketchFolder);
   void clearPendingUploadFlow();
   bool startUploadFromPendingFlow();
   void updateUploadActionStates();

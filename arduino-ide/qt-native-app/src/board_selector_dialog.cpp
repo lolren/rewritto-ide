@@ -160,18 +160,9 @@ class BoardFilterProxyModel final : public QSortFilterProxyModel {
     const QString name = sourceModel()->data(nameIdx, Qt::DisplayRole).toString();
     const QString fqbn = sourceModel()->data(fqbnIdx, Qt::DisplayRole).toString();
     const QString coreId = sourceModel()->data(nameIdx, kRoleCoreId).toString();
-    if (name.contains(filterRegularExpression()) ||
-        fqbn.contains(filterRegularExpression()) ||
-        coreId.contains(filterRegularExpression())) {
-      return true;
-    }
-    const int childRows = sourceModel()->rowCount(nameIdx);
-    for (int child = 0; child < childRows; ++child) {
-      if (filterAcceptsRow(child, nameIdx)) {
-        return true;
-      }
-    }
-    return false;
+    return name.contains(filterRegularExpression()) ||
+           fqbn.contains(filterRegularExpression()) ||
+           coreId.contains(filterRegularExpression());
   }
 
   bool lessThan(const QModelIndex& sourceLeft,
@@ -244,7 +235,6 @@ BoardSelectorDialog::BoardSelectorDialog(QWidget* parent) : QDialog(parent) {
   proxy_->setSortCaseSensitivity(Qt::CaseInsensitive);
   proxy_->setDynamicSortFilter(true);
   proxy_->setRecursiveFilteringEnabled(true);
-  proxy_->setAutoAcceptChildRows(true);
 
   table_ = new QTreeView(this);
   table_->setModel(proxy_);

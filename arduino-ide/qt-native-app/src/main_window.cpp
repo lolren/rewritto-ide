@@ -123,6 +123,7 @@ static constexpr auto kEditorViewStatesKey = "editorViewStates";
 static constexpr auto kBreakpointsKey = "breakpoints";
 static constexpr auto kDebugWatchesKey = "debugWatches";
 static constexpr auto kStateVersionKey = "stateVersion";
+static constexpr auto kSketchBoardSelectionsKey = "sketchBoardSelections";
 static constexpr int kCurrentStateVersion = 1;
 
 namespace {
@@ -712,6 +713,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     if (editor_) {
       editor_->setDefaultSaveDirectory(restoredSketchFolder);
     }
+    applyPreferredFqbnForSketch(restoredSketchFolder);
     if (actionPinSketch_) {
       const QSignalBlocker blocker(actionPinSketch_);
       actionPinSketch_->setChecked(isSketchPinned(restoredSketchFolder));
@@ -1866,6 +1868,7 @@ void MainWindow::createLayout() {
               settings.setValue(kFqbnKey, fqbn);
             }
             settings.endGroup();
+            storeFqbnForCurrentSketch(fqbn);
 
             updateBoardPortIndicator();
             refreshBoardOptions();
@@ -3040,10 +3043,13 @@ void MainWindow::refreshInstalledBoards() {
             sourceModel->appendRow(item);
         }
 
-        QSettings settings;
-        settings.beginGroup(kSettingsGroup);
-        const QString savedFqbn = settings.value(kFqbnKey).toString();
-        settings.endGroup();
+	        QString savedFqbn = preferredFqbnForSketch(currentSketchFolderPath());
+	        if (savedFqbn.isEmpty()) {
+	          QSettings settings;
+	          settings.beginGroup(kSettingsGroup);
+	          savedFqbn = settings.value(kFqbnKey).toString().trimmed();
+	          settings.endGroup();
+	        }
 
         if (proxy) {
             proxy->sort(0, Qt::AscendingOrder); // Trigger sort
@@ -3454,6 +3460,7 @@ void MainWindow::maybeAutoSelectBoardForCurrentPort() {
   settings.beginGroup(kSettingsGroup);
   settings.setValue(kFqbnKey, detected);
   settings.endGroup();
+  storeFqbnForCurrentSketch(detected);
 }
 void MainWindow::refreshBoardOptions() {
   clearBoardOptionMenus();
@@ -4124,6 +4131,7 @@ bool MainWindow::openSketchFolderInUi(const QString& folder) {
   if (editor_) {
     editor_->setDefaultSaveDirectory(sketchFolder);
   }
+  applyPreferredFqbnForSketch(sketchFolder);
 
   addRecentSketch(sketchFolder);
 
@@ -4241,6 +4249,69 @@ QString MainWindow::currentFqbn() const {
   settings.endGroup();
 
   return fqbn;
+}
+
+QString MainWindow::sketchSelectionKey(const QString& sketchFolder) const {
+  const QString normalized = normalizeSketchFolderPath(sketchFolder);
+  if (normalized.isEmpty()) {
+    return {};
+  }
+  const QByteArray encoded = normalized.toUtf8().toBase64(
+      QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals);
+  return QString::fromLatin1(encoded);
+}
+
+QString MainWindow::preferredFqbnForSketch(const QString& sketchFolder) const {
+  const QString key = sketchSelectionKey(sketchFolder);
+  if (key.isEmpty()) {
+    return {};
+  }
+
+  QSettings settings;
+  settings.beginGroup(kSettingsGroup);
+  const QVariantMap map = settings.value(kSketchBoardSelectionsKey).toMap();
+  settings.endGroup();
+  return map.value(key).toString().trimmed();
+}
+
+void MainWindow::storeFqbnForCurrentSketch(const QString& fqbn) {
+  const QString sketchFolder = currentSketchFolderPath();
+  const QString key = sketchSelectionKey(sketchFolder);
+  if (key.isEmpty()) {
+    return;
+  }
+
+  QSettings settings;
+  settings.beginGroup(kSettingsGroup);
+  QVariantMap map = settings.value(kSketchBoardSelectionsKey).toMap();
+  const QString trimmed = fqbn.trimmed();
+  if (trimmed.isEmpty()) {
+    map.remove(key);
+  } else {
+    map.insert(key, trimmed);
+  }
+  settings.setValue(kSketchBoardSelectionsKey, map);
+  settings.endGroup();
+}
+
+void MainWindow::applyPreferredFqbnForSketch(const QString& sketchFolder) {
+  const QString preferred = preferredFqbnForSketch(sketchFolder);
+  if (preferred.isEmpty()) {
+    return;
+  }
+
+  if (boardCombo_) {
+    const int index = boardCombo_->findData(preferred);
+    if (index >= 0) {
+      boardCombo_->setCurrentIndex(index);
+      return;
+    }
+  }
+
+  QSettings settings;
+  settings.beginGroup(kSettingsGroup);
+  settings.setValue(kFqbnKey, preferred);
+  settings.endGroup();
 }
 
 QString MainWindow::currentProgrammer() const {
@@ -4602,13 +4673,14 @@ void MainWindow::showSelectBoardDialog() {
           }
 
           // Save to settings
-          QSettings settings;
-          settings.beginGroup(kSettingsGroup);
-          settings.setValue(kFqbnKey, selectedFqbn);
-          settings.endGroup();
+	          QSettings settings;
+	          settings.beginGroup(kSettingsGroup);
+	          settings.setValue(kFqbnKey, selectedFqbn);
+	          settings.endGroup();
+              storeFqbnForCurrentSketch(selectedFqbn);
 
-          updateBoardPortIndicator();
-          showToast(tr("Board selected: %1").arg(selectedFqbn));
+	          updateBoardPortIndicator();
+	          showToast(tr("Board selected: %1").arg(selectedFqbn));
         }
       }
     } else {
