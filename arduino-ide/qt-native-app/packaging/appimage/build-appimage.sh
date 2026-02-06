@@ -17,7 +17,7 @@ ALS_VERSION="0.7.7"
 ALS_URL="https://github.com/arduino/arduino-language-server/releases/download/${ALS_VERSION}/arduino-language-server_${ALS_VERSION}_Linux_64bit.tar.gz"
 ARDUINO_CLI_URL="${ARDUINO_CLI_URL:-https://downloads.arduino.cc/arduino-cli/arduino-cli_latest_Linux_64bit.tar.gz}"
 
-ICON_SRC="${ROOT_DIR}/packaging/appimage/${DESKTOP_ID}.svg"
+ICON_SRC="${ROOT_DIR}/resources/icons/app-icon.svg"
 APPSTREAM_META_SRC="${ROOT_DIR}/packaging/appimage/${DESKTOP_ID}.appdata.xml"
 DESKTOP_FILE="${ROOT_DIR}/packaging/appimage/${DESKTOP_ID}.desktop"
 

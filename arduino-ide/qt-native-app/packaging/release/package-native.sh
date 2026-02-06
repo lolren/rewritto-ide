@@ -25,6 +25,7 @@ mkdir -p "${OUT_DIR}"
 cp "${BIN_PATH}" "${PKG_DIR}/rewritto-ide"
 cp "${ROOT_DIR}/LICENSE.txt" "${PKG_DIR}/LICENSE.txt"
 cp "${ROOT_DIR}/packaging/appimage/com.rewritto.ide.desktop" "${PKG_DIR}/rewritto-ide.desktop"
+cp "${ROOT_DIR}/resources/icons/app-icon.svg" "${PKG_DIR}/com.rewritto.ide.svg"
 
 cat > "${PKG_DIR}/README.txt" <<'EOF'
 Rewritto Ide (native Linux binary)

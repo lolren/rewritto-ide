@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QIcon>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QLocale>
@@ -84,7 +85,8 @@ int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
   QApplication::setApplicationName(kBrandApp);
   QApplication::setOrganizationName(kBrandOrg);
-  QApplication::setApplicationVersion(QStringLiteral("0.2.0"));
+  QApplication::setApplicationVersion(QStringLiteral("0.4.0"));
+  QApplication::setWindowIcon(QIcon(QStringLiteral(":/icons/app-icon.svg")));
 
   migrateLegacySettingsIfNeeded();
 

@@ -89,6 +89,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QMouseEvent>
+#include <QStorageInfo>
 #include <QStandardItem>
 #include <QStandardItemModel>
 #include <QStandardPaths>
@@ -140,6 +141,18 @@ constexpr int kPortRoleProtocol = Qt::UserRole + 303;
 constexpr int kPortRoleMissing = Qt::UserRole + 304;
 
 constexpr int kRoleIsFavorite = Qt::UserRole + 1;
+
+bool isLikelyUf2VolumeName(QString name) {
+  name = name.trimmed().toLower();
+  if (name.isEmpty()) {
+    return false;
+  }
+  return name == QStringLiteral("rpi-rp2") ||
+         name.contains(QStringLiteral("rp2040")) ||
+         name.contains(QStringLiteral("rp2350")) ||
+         name.startsWith(QStringLiteral("rp2")) ||
+         name.contains(QStringLiteral("uf2"));
+}
 
 class BoardItemDelegate final : public QStyledItemDelegate {
  public:
@@ -263,7 +276,8 @@ bool isThemeDark(QString theme) {
   }
   if (theme == QStringLiteral("dark") || theme == QStringLiteral("oceanic") ||
       theme == QStringLiteral("cyber") || theme == QStringLiteral("graphite") ||
-      theme == QStringLiteral("nord") || theme == QStringLiteral("everforest")) {
+      theme == QStringLiteral("nord") || theme == QStringLiteral("everforest") ||
+      theme == QStringLiteral("midnight") || theme == QStringLiteral("terra")) {
     return true;
   }
   return false;
@@ -575,7 +589,9 @@ bool updateArduinoCliConfig(const QString& configPath,
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   setWindowTitle("Rewritto Ide");
-  setWindowIcon(QIcon::fromTheme("arduino-ide", QIcon::fromTheme("text-x-c++src")));
+  setWindowIcon(
+      QIcon::fromTheme(QStringLiteral("com.rewritto.ide"),
+                       QIcon(QStringLiteral(":/icons/app-icon.svg"))));
   resize(1200, 800);  // Set a sensible default size
 
   sketchManager_ = new SketchManager(this);
@@ -1225,18 +1241,10 @@ void MainWindow::createMenus() {
               if (editor_) {
                 editor_->setTheme(isThemeDark(theme));
               }
-              QSettings settings;
-              settings.beginGroup("Preferences");
-              settings.setValue("theme", theme);
-              settings.endGroup();
             });
     connect(dialog, &PreferencesDialog::uiScalePreviewRequested, this,
             [this](double scale) {
               UiScaleManager::apply(scale);
-              QSettings settings;
-              settings.beginGroup("Preferences");
-              settings.setValue("uiScale", scale);
-              settings.endGroup();
             });
 
     const int result = dialog->exec();
@@ -1318,6 +1326,12 @@ void MainWindow::createMenus() {
       if (dialog->language().trimmed() != initialLocale.trimmed()) {
         QMessageBox::information(this, tr("Restart Required"),
                                  tr("Language changes will take effect after restarting the IDE."));
+      }
+    } else {
+      UiScaleManager::apply(initialUiScale);
+      ThemeManager::apply(initialTheme);
+      if (editor_) {
+        editor_->setTheme(isThemeDark(initialTheme));
       }
     }
 
@@ -1814,7 +1828,7 @@ void MainWindow::createLayout() {
   QToolButton* boardSearchButton = new QToolButton(boardSelectorContainer);
   boardSearchButton->setObjectName("BoardSearchButton");
   boardSearchButton->setAutoRaise(true);
-  boardSearchButton->setIcon(QIcon::fromTheme("edit-find"));
+  boardSearchButton->setIcon(style()->standardIcon(QStyle::SP_FileDialogContentsView));
   boardSearchButton->setToolTip(tr("Search boards"));
   connect(boardSearchButton, &QToolButton::clicked, this,
           [this] { showSelectBoardDialog(); });
@@ -1880,6 +1894,31 @@ void MainWindow::createLayout() {
   actionSerialPlotter_->setText(tr("Serial Plotter"));
   buildToolBar_->addAction(actionSerialMonitor_);
   buildToolBar_->addAction(actionSerialPlotter_);
+  buildToolBar_->addSeparator();
+
+  auto* polishTodoButton = new QToolButton(buildToolBar_);
+  polishTodoButton->setText(tr("TODO"));
+  polishTodoButton->setAutoRaise(true);
+  polishTodoButton->setPopupMode(QToolButton::InstantPopup);
+  polishTodoButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+  polishTodoButton->setToolTip(
+      tr("Planned features list (not implemented yet)"));
+
+  auto* polishTodoMenu = new QMenu(polishTodoButton);
+  polishTodoMenu->addSection(tr("Planned (not implemented yet)"));
+  auto addTodoItem = [polishTodoMenu](const QString& label) {
+    QAction* action = polishTodoMenu->addAction(label);
+    action->setEnabled(false);
+  };
+  addTodoItem(tr("Snapshot saving"));
+  addTodoItem(tr("GitHub upload"));
+  addTodoItem(tr("Save into existing project"));
+  addTodoItem(tr("Upload without build (advanced flow)"));
+  addTodoItem(tr("Additional board info panel"));
+  addTodoItem(tr("Library/core version controls"));
+
+  polishTodoButton->setMenu(polishTodoMenu);
+  buildToolBar_->addWidget(polishTodoButton);
 
   // --- Font Toolbar ---
   fontToolBar_ = new QToolBar(tr("Font"), this);
@@ -1949,10 +1988,8 @@ void MainWindow::createLayout() {
   addToolBar(Qt::LeftToolBarArea, sideBarToolBar_);
 
   // ... (rest of sidebar icon logic stays the same) ...
-  auto createMonoIcon = [this](QStyle::StandardPixmap stdPixmap, const QString& name) {
-    QIcon icon = QIcon::fromTheme(name);
-    if (icon.isNull()) icon = style()->standardIcon(stdPixmap);
-    return icon;
+  auto createMonoIcon = [this](QStyle::StandardPixmap stdPixmap, const QString&) {
+    return style()->standardIcon(stdPixmap);
   };
 
   QAction* sketchbookToggle = sideBarToolBar_->addAction(createMonoIcon(QStyle::SP_DialogOpenButton, "folder"), "");
@@ -2532,9 +2569,16 @@ void MainWindow::wireSignals() {
                   return;
                 }
 
-	                output_->appendHtml(QString("<span style=\"color:#d32f2f;\"><b>%1</b></span>")
-	                                        .arg(QString("arduino-cli finished with exit code %1.").arg(exitCode)));
-	              }
+                if (job == CliJobKind::Upload && tryUf2UploadFallback(output)) {
+                  clearPendingUploadFlow();
+                  updateStopActionState();
+                  maybeRefreshPorts();
+                  return;
+                }
+
+		                output_->appendHtml(QString("<span style=\"color:#d32f2f;\"><b>%1</b></span>")
+		                                        .arg(QString("arduino-cli finished with exit code %1.").arg(exitCode)));
+		              }
 	            }
 	            if (job == CliJobKind::Upload ||
 	                job == CliJobKind::UploadUsingProgrammer) {
@@ -3526,8 +3570,10 @@ bool MainWindow::startUploadFromPendingFlow() {
   const QString buildPath = pendingUploadFlow_.buildPath.trimmed();
 
   const bool hasProgrammer = !programmer.isEmpty();
+  const bool allowMissingPort =
+      pendingUploadFlow_.allowMissingPort && !hasProgrammer;
   if (sketchFolder.isEmpty() || fqbn.isEmpty() ||
-      (!hasProgrammer && port.isEmpty())) {
+      (!hasProgrammer && port.isEmpty() && !allowMissingPort)) {
     return false;
   }
 
@@ -3860,6 +3906,216 @@ bool MainWindow::currentPortIsMissing() const {
     return false;
   }
   return portCombo_->itemData(idx, kPortRoleMissing).toBool();
+}
+
+bool MainWindow::isPortOptionalForFqbn(const QString& fqbn) const {
+  const QString lower = fqbn.trimmed().toLower();
+  if (lower.isEmpty()) {
+    return false;
+  }
+  return lower.contains(QStringLiteral("rp2040")) ||
+         lower.contains(QStringLiteral("rp2350"));
+}
+
+QString MainWindow::findUf2ArtifactPath(const QString& buildPath,
+                                        const QString& sketchFolder) const {
+  const QString normalizedBuildPath = buildPath.trimmed();
+  if (normalizedBuildPath.isEmpty()) {
+    return {};
+  }
+  QDir buildDir(normalizedBuildPath);
+  if (!buildDir.exists()) {
+    return {};
+  }
+
+  const QString sketchName =
+      QFileInfo(sketchFolder.trimmed()).fileName().trimmed().toLower();
+  QString firstFound;
+  QDirIterator it(normalizedBuildPath, QStringList{QStringLiteral("*.uf2")},
+                  QDir::Files, QDirIterator::Subdirectories);
+  while (it.hasNext()) {
+    const QString candidate = it.next();
+    if (firstFound.isEmpty()) {
+      firstFound = candidate;
+    }
+    if (sketchName.isEmpty()) {
+      continue;
+    }
+    const QString fileName = QFileInfo(candidate).fileName().toLower();
+    if (fileName.startsWith(sketchName + QStringLiteral(".")) ||
+        fileName.startsWith(sketchName + QStringLiteral("_")) ||
+        fileName.startsWith(sketchName + QStringLiteral("-"))) {
+      return candidate;
+    }
+  }
+  return firstFound;
+}
+
+QStringList MainWindow::detectUf2MountPoints() const {
+  QStringList mountPoints;
+  QSet<QString> seen;
+
+  auto addMountPoint = [&mountPoints, &seen](const QString& path) {
+    const QString normalized = QDir(path).absolutePath();
+    if (normalized.isEmpty() || seen.contains(normalized)) {
+      return;
+    }
+    const QFileInfo info(normalized);
+    if (!info.isDir() || !info.isWritable()) {
+      return;
+    }
+    seen.insert(normalized);
+    mountPoints.push_back(normalized);
+  };
+
+  const QList<QStorageInfo> volumes = QStorageInfo::mountedVolumes();
+  for (const QStorageInfo& volume : volumes) {
+    if (!volume.isValid() || !volume.isReady() || volume.isReadOnly()) {
+      continue;
+    }
+    const QString rootPath = volume.rootPath();
+    if (rootPath.trimmed().isEmpty()) {
+      continue;
+    }
+    const QString baseName = QFileInfo(rootPath).fileName();
+    if (isLikelyUf2VolumeName(baseName) ||
+        isLikelyUf2VolumeName(volume.displayName()) ||
+        isLikelyUf2VolumeName(volume.name())) {
+      addMountPoint(rootPath);
+    }
+  }
+
+  QStringList candidateRoots;
+  const QString user = qEnvironmentVariable("USER").trimmed();
+  if (!user.isEmpty()) {
+    candidateRoots << QStringLiteral("/media/%1").arg(user)
+                   << QStringLiteral("/run/media/%1").arg(user);
+  }
+  candidateRoots << QStringLiteral("/Volumes");
+
+  for (const QString& root : candidateRoots) {
+    QDir dir(root);
+    if (!dir.exists()) {
+      continue;
+    }
+    const QFileInfoList children = dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QFileInfo& child : children) {
+      if (isLikelyUf2VolumeName(child.fileName())) {
+        addMountPoint(child.absoluteFilePath());
+      }
+    }
+  }
+
+  return mountPoints;
+}
+
+bool MainWindow::copyUf2ArtifactToMountPoint(const QString& uf2Path,
+                                             const QString& mountPoint,
+                                             QString* outError) const {
+  const QFileInfo sourceInfo(uf2Path);
+  if (!sourceInfo.isFile()) {
+    if (outError) {
+      *outError = tr("UF2 artifact not found: %1").arg(uf2Path);
+    }
+    return false;
+  }
+
+  const QDir mountDir(mountPoint);
+  if (!mountDir.exists()) {
+    if (outError) {
+      *outError = tr("UF2 target volume is not available: %1").arg(mountPoint);
+    }
+    return false;
+  }
+
+  const QString targetPath = mountDir.absoluteFilePath(sourceInfo.fileName());
+  if (QFile::exists(targetPath) && !QFile::remove(targetPath)) {
+    if (outError) {
+      *outError = tr("Could not overwrite existing file on UF2 volume: %1")
+                      .arg(targetPath);
+    }
+    return false;
+  }
+  if (!QFile::copy(sourceInfo.absoluteFilePath(), targetPath)) {
+    if (outError) {
+      *outError = tr("Could not copy UF2 artifact to volume: %1").arg(targetPath);
+    }
+    return false;
+  }
+
+  if (outError) {
+    outError->clear();
+  }
+  return true;
+}
+
+bool MainWindow::tryUf2UploadFallback(const QString& cliOutput) {
+  if (pendingUploadFlow_.uf2FallbackAttempted) {
+    return false;
+  }
+
+  const QString fqbn = pendingUploadFlow_.fqbn.trimmed();
+  const QString outputLower = cliOutput.toLower();
+  const bool likelyUf2Board = isPortOptionalForFqbn(fqbn);
+  const bool outputSuggestsUf2 =
+      outputLower.contains(QStringLiteral("uf2")) ||
+      outputLower.contains(QStringLiteral("rpi-rp2")) ||
+      outputLower.contains(QStringLiteral("mass storage"));
+  if (!likelyUf2Board && !outputSuggestsUf2) {
+    return false;
+  }
+
+  const QString uf2Path = findUf2ArtifactPath(pendingUploadFlow_.buildPath,
+                                              pendingUploadFlow_.sketchFolder);
+  if (uf2Path.isEmpty()) {
+    return false;
+  }
+
+  pendingUploadFlow_.uf2FallbackAttempted = true;
+  if (output_) {
+    output_->appendHtml(QString("<span style=\"color:#fbc02d;\"><b>%1</b></span>")
+                            .arg(tr("Switching to UF2 drag-and-drop upload flow…")));
+  }
+
+  const QStringList mounts = detectUf2MountPoints();
+  if (mounts.size() == 1) {
+    QString copyError;
+    if (copyUf2ArtifactToMountPoint(uf2Path, mounts.first(), &copyError)) {
+      if (output_) {
+        output_->appendHtml(QString("<span style=\"color:#388e3c;\"><b>%1</b></span>")
+                                .arg(tr("UF2 upload complete: copied %1 to %2")
+                                         .arg(QFileInfo(uf2Path).fileName(), mounts.first())));
+      }
+      showToast(tr("UF2 upload completed"));
+      return true;
+    }
+    if (output_) {
+      output_->appendHtml(QString("<span style=\"color:#d32f2f;\"><b>%1</b></span>")
+                              .arg(copyError));
+    }
+  } else if (mounts.size() > 1) {
+    if (output_) {
+      output_->appendLine(tr("Multiple UF2 volumes detected:"));
+      for (const QString& mount : mounts) {
+        output_->appendLine(QStringLiteral("  - %1").arg(mount));
+      }
+    }
+  } else if (output_) {
+    output_->appendLine(
+        tr("No UF2 volume detected. Put the board in BOOT mode (RPI-RP2) and copy the UF2 file manually."));
+  }
+
+  if (output_) {
+    output_->appendLine(tr("UF2 artifact ready: %1").arg(uf2Path));
+  }
+  showToastWithAction(
+      tr("UF2 file ready for manual upload"),
+      tr("Open Folder"),
+      [uf2Path] {
+        QDesktopServices::openUrl(
+            QUrl::fromLocalFile(QFileInfo(uf2Path).absolutePath()));
+      });
+  return true;
 }
 
 QString MainWindow::toFileUri(const QString& filePath) {
@@ -4251,18 +4507,21 @@ void MainWindow::fastUploadSketch() {
     return;
   }
 
-  if (currentFqbn().isEmpty()) {
+  const QString fqbn = currentFqbn().trimmed();
+  if (fqbn.isEmpty()) {
     QMessageBox::warning(this, tr("No Board Selected"),
                          tr("Please select a board first."));
     return;
   }
 
-  if (currentPort().isEmpty()) {
+  const QString selectedPort = currentPort().trimmed();
+  const bool allowMissingPort = isPortOptionalForFqbn(fqbn);
+  if (selectedPort.isEmpty() && !allowMissingPort) {
     QMessageBox::warning(this, tr("No Port Selected"),
                          tr("Please select a port first."));
     return;
   }
-  if (currentPortIsMissing()) {
+  if (!selectedPort.isEmpty() && currentPortIsMissing()) {
     QMessageBox::warning(this, tr("Port Not Available"),
                          tr("The selected port is not available. Please select a connected port."));
     return;
@@ -4284,29 +4543,43 @@ void MainWindow::fastUploadSketch() {
   const bool verboseUpload = settings.value("verboseUpload", false).toBool();
   settings.endGroup();
 
-  QStringList args = {"upload", "--fqbn", currentFqbn(), "--port", currentPort()};
-  const QString protocol = currentPortProtocol();
-  if (!protocol.isEmpty()) {
-    args << "--protocol" << protocol;
-  }
-  if (verboseUpload) {
-    args << "--verbose";
-  }
-
-  // Use the same build paths used in verify/upload
-  QDir buildDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation) + "/rewritto/build");
+  QString buildPath;
+  QDir buildDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
+                "/rewritto/build");
   if (buildDir.exists()) {
-      args << "--input-dir" << buildDir.absolutePath();
+    buildPath = buildDir.absolutePath();
   } else {
-      QDir uploadDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation) + "/rewritto/upload");
-      if (uploadDir.exists()) {
-          args << "--input-dir" << uploadDir.absolutePath();
-      }
+    QDir uploadDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
+                   "/rewritto/upload");
+    if (uploadDir.exists()) {
+      buildPath = uploadDir.absolutePath();
+    }
   }
 
-  args << sketchFolder;
+  clearPendingUploadFlow();
+  pendingUploadFlow_.sketchFolder = sketchFolder;
+  pendingUploadFlow_.buildPath = buildPath;
+  pendingUploadFlow_.fqbn = fqbn;
+  pendingUploadFlow_.port = selectedPort;
+  pendingUploadFlow_.protocol =
+      selectedPort.isEmpty() ? QString{} : currentPortProtocol();
+  pendingUploadFlow_.verboseUpload = verboseUpload;
+  pendingUploadFlow_.useInputDir = !buildPath.isEmpty();
+  pendingUploadFlow_.allowMissingPort = allowMissingPort;
+  pendingUploadFlow_.uf2FallbackAttempted = false;
+  pendingUploadFlow_.finalJobKind = CliJobKind::Upload;
 
-  arduinoCli_->run(args);
+  if (allowMissingPort && selectedPort.isEmpty()) {
+    output_->appendLine(
+        tr("No serial port selected. Trying board-specific upload flow."));
+  }
+
+  if (!startUploadFromPendingFlow()) {
+    output_->appendHtml(QString("<span style=\"color:#d32f2f;\"><b>%1</b></span>")
+                            .arg(tr("Upload failed: could not start upload step.")));
+    clearPendingUploadFlow();
+    updateStopActionState();
+  }
 }
 
 void MainWindow::uploadSketch() {
@@ -4321,18 +4594,21 @@ void MainWindow::uploadSketch() {
     editor_->saveAll();
   }
 
-  if (currentFqbn().isEmpty()) {
+  const QString fqbn = currentFqbn().trimmed();
+  if (fqbn.isEmpty()) {
     QMessageBox::warning(this, tr("No Board Selected"),
                          tr("Please select a board first."));
     return;
   }
 
-  if (currentPort().isEmpty()) {
+  const QString selectedPort = currentPort().trimmed();
+  const bool allowMissingPort = isPortOptionalForFqbn(fqbn);
+  if (selectedPort.isEmpty() && !allowMissingPort) {
     QMessageBox::warning(this, tr("No Port Selected"),
                          tr("Please select a port first."));
     return;
   }
-  if (currentPortIsMissing()) {
+  if (!selectedPort.isEmpty() && currentPortIsMissing()) {
     QMessageBox::warning(this, tr("Port Not Available"),
                          tr("The selected port is not available. Please select a connected port."));
     return;
@@ -4353,31 +4629,39 @@ void MainWindow::uploadSketch() {
   const bool verbose = settings.value("verboseCompile", false).toBool();
   const QString warningsLevel = settings.value("compilerWarnings", "none").toString();
   const bool verboseUpload = settings.value("verboseUpload", false).toBool();
-  settings.endGroup();
+	  settings.endGroup();
 
-  QStringList args = {"compile", "--fqbn", currentFqbn(), "--warnings", warningsLevel};
-  if (verbose) {
-    args << "--verbose";
-  }
+	  QStringList args = {"compile", "--fqbn", fqbn, "--warnings", warningsLevel};
+	  if (verbose) {
+	    args << "--verbose";
+	  }
 
   QDir buildDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation) + "/rewritto/upload");
   buildDir.mkpath(buildDir.absolutePath());
   args << "--build-path" << buildDir.absolutePath();
   args << sketchFolder;
 
-  // Store pending upload info
-  pendingUploadFlow_.sketchFolder = sketchFolder;
-  pendingUploadFlow_.buildPath = buildDir.absolutePath();
-  pendingUploadFlow_.fqbn = currentFqbn();
-  pendingUploadFlow_.port = currentPort();
-  pendingUploadFlow_.protocol = currentPortProtocol();
-  pendingUploadFlow_.verboseCompile = verbose;
-  pendingUploadFlow_.verboseUpload = verboseUpload;
-  pendingUploadFlow_.useInputDir = true;
-  pendingUploadFlow_.warnings = warningsLevel;
-  pendingUploadFlow_.finalJobKind = CliJobKind::Upload;
+	  // Store pending upload info
+	  pendingUploadFlow_.sketchFolder = sketchFolder;
+	  pendingUploadFlow_.buildPath = buildDir.absolutePath();
+	  pendingUploadFlow_.fqbn = fqbn;
+	  pendingUploadFlow_.port = selectedPort;
+	  pendingUploadFlow_.protocol =
+	      selectedPort.isEmpty() ? QString{} : currentPortProtocol();
+	  pendingUploadFlow_.verboseCompile = verbose;
+	  pendingUploadFlow_.verboseUpload = verboseUpload;
+	  pendingUploadFlow_.useInputDir = true;
+	  pendingUploadFlow_.allowMissingPort = allowMissingPort;
+	  pendingUploadFlow_.uf2FallbackAttempted = false;
+	  pendingUploadFlow_.warnings = warningsLevel;
+	  pendingUploadFlow_.finalJobKind = CliJobKind::Upload;
 
-  arduinoCli_->run(args);
+  if (allowMissingPort && selectedPort.isEmpty()) {
+    output_->appendLine(
+        tr("No serial port selected. Will attempt UF2-based upload after compile."));
+  }
+
+	  arduinoCli_->run(args);
 }
 
 void MainWindow::stopOperation() {
@@ -4460,6 +4744,8 @@ void MainWindow::uploadUsingProgrammer() {
   pendingUploadFlow_.verboseCompile = verboseCompile;
   pendingUploadFlow_.verboseUpload = verboseUpload;
   pendingUploadFlow_.useInputDir = true;
+  pendingUploadFlow_.allowMissingPort = false;
+  pendingUploadFlow_.uf2FallbackAttempted = false;
   pendingUploadFlow_.warnings = warningsLevel;
   pendingUploadFlow_.finalJobKind = CliJobKind::UploadUsingProgrammer;
 

@@ -46,6 +46,9 @@ PreferencesDialog::PreferencesDialog(QWidget* parent) : QDialog(parent) {
   themeCombo_->addItem(tr("Nord"), "nord");
   themeCombo_->addItem(tr("Everforest"), "everforest");
   themeCombo_->addItem(tr("Dawn"), "dawn");
+  themeCombo_->addItem(tr("Aurora"), "aurora");
+  themeCombo_->addItem(tr("Midnight"), "midnight");
+  themeCombo_->addItem(tr("Terra"), "terra");
   themeCombo_->addItem(tr("Y2K"), "y2k");
   connect(themeCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
           [this](int) { emit themePreviewRequested(theme()); });

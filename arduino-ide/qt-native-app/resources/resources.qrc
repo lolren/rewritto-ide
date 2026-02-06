@@ -1,5 +1,6 @@
 <RCC>
   <qresource prefix="/icons">
+    <file alias="app-icon.svg">icons/app-icon.svg</file>
     <file alias="arrow-down.png">icons/arrow-down.png</file>
     <file alias="arrow-down-light.png">icons/arrow-down-light.png</file>
     <file alias="arrow-up.png">icons/arrow-up.png</file>

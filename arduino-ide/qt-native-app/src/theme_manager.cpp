@@ -257,6 +257,69 @@ ThemeSpec dawnTheme() {
   return s;
 }
 
+ThemeSpec auroraTheme() {
+  ThemeSpec s;
+  s.dark = false;
+  s.windowBg = "#f5f8ff";
+  s.text = "#0f1f3d";
+  s.surface = "#ffffff";
+  s.surfaceAlt = "#e9eefc";
+  s.accent = "#2563eb";
+  s.border = "#cfd8ef";
+  s.headerBg = "#1d4ed8";
+  s.headerFg = "#f8fbff";
+  s.hover = "#e4ebff";
+  s.listSelection = "rgba(37, 99, 235, 0.24)";
+  s.separator = "#d7e0f4";
+  s.listSelectionText = "#0b1730";
+  s.accentText = "#ffffff";
+  s.disabledText = "#7c8aa6";
+  s.alternateBase = "#edf3ff";
+  return s;
+}
+
+ThemeSpec midnightTheme() {
+  ThemeSpec s;
+  s.dark = true;
+  s.windowBg = "#070f1f";
+  s.text = "#dbeafe";
+  s.surface = "#0d172b";
+  s.surfaceAlt = "#0b1426";
+  s.accent = "#38bdf8";
+  s.border = "#24324a";
+  s.headerBg = "#0a1428";
+  s.headerFg = "#e0f2fe";
+  s.hover = "#15233c";
+  s.listSelection = "rgba(56, 189, 248, 0.26)";
+  s.separator = "#2a3955";
+  s.listSelectionText = "#ecfeff";
+  s.accentText = "#05263a";
+  s.disabledText = "#6c7a93";
+  s.alternateBase = "#111d32";
+  return s;
+}
+
+ThemeSpec terraTheme() {
+  ThemeSpec s;
+  s.dark = true;
+  s.windowBg = "#16120f";
+  s.text = "#f3e7db";
+  s.surface = "#211a15";
+  s.surfaceAlt = "#1d1612";
+  s.accent = "#f97316";
+  s.border = "#4a372a";
+  s.headerBg = "#2a1f18";
+  s.headerFg = "#fff1e5";
+  s.hover = "#2e231c";
+  s.listSelection = "rgba(249, 115, 22, 0.28)";
+  s.separator = "#584235";
+  s.listSelectionText = "#fff7ef";
+  s.accentText = "#2f1303";
+  s.disabledText = "#9f8b7b";
+  s.alternateBase = "#241c17";
+  return s;
+}
+
 ThemeSpec resolveTheme(QString theme, bool systemDark, bool* ok) {
   theme = theme.trimmed().toLower();
   if (theme.isEmpty()) {
@@ -305,6 +368,18 @@ ThemeSpec resolveTheme(QString theme, bool systemDark, bool* ok) {
   if (theme == QStringLiteral("dawn")) {
     if (ok) *ok = true;
     return dawnTheme();
+  }
+  if (theme == QStringLiteral("aurora")) {
+    if (ok) *ok = true;
+    return auroraTheme();
+  }
+  if (theme == QStringLiteral("midnight")) {
+    if (ok) *ok = true;
+    return midnightTheme();
+  }
+  if (theme == QStringLiteral("terra")) {
+    if (ok) *ok = true;
+    return terraTheme();
   }
 
   if (ok) *ok = false;
@@ -450,7 +525,7 @@ QString buildStyleSheet(const ThemeSpec& t) {
         border-radius: 6px;
         color: %2;
         selection-background-color: %5;
-        selection-color: %13;
+        selection-color: %12;
     }
 
     QToolBar#HeaderToolBar QComboBox QAbstractItemView::item {
@@ -461,7 +536,7 @@ QString buildStyleSheet(const ThemeSpec& t) {
 
     QToolBar#HeaderToolBar QComboBox QAbstractItemView::item:selected {
         background-color: %5;
-        color: %13;
+        color: %12;
     }
 
     QToolBar#ActivityBar {
@@ -614,7 +689,7 @@ QString buildStyleSheet(const ThemeSpec& t) {
         font-family: "JetBrains Mono", "Cascadia Code", "Consolas", "Menlo", monospace;
         font-size: 12px;
         selection-background-color: %5;
-        selection-color: %13;
+        selection-color: %12;
     }
 
     QPlainTextEdit {
@@ -699,12 +774,12 @@ QString buildStyleSheet(const ThemeSpec& t) {
 
     QComboBox QAbstractItemView::item:selected {
         background-color: %5;
-        color: %13;
+        color: %12;
     }
 
     QPushButton {
         background-color: %5;
-        color: %13;
+        color: %12;
         border: none;
         border-radius: 6px;
         padding: 6px 16px;

@@ -374,6 +374,14 @@ class MainWindow final : public QMainWindow {
   QString currentPort() const;
   QString currentPortProtocol() const;
   bool currentPortIsMissing() const;
+  bool isPortOptionalForFqbn(const QString& fqbn) const;
+  QString findUf2ArtifactPath(const QString& buildPath,
+                              const QString& sketchFolder) const;
+  QStringList detectUf2MountPoints() const;
+  bool copyUf2ArtifactToMountPoint(const QString& uf2Path,
+                                   const QString& mountPoint,
+                                   QString* outError) const;
+  bool tryUf2UploadFallback(const QString& cliOutput);
   void updateBoardPortIndicator();
   void clearPendingUploadFlow();
   bool startUploadFromPendingFlow();
@@ -529,6 +537,8 @@ class MainWindow final : public QMainWindow {
     bool verboseCompile = false;
     bool verboseUpload = false;
     bool useInputDir = true;
+    bool allowMissingPort = false;
+    bool uf2FallbackAttempted = false;
     CliJobKind finalJobKind = CliJobKind::Upload;
   };
   PendingUploadFlow pendingUploadFlow_;
