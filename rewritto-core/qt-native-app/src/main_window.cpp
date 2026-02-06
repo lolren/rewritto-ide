@@ -3586,8 +3586,13 @@ void MainWindow::startPortWatcher() {
 
 void MainWindow::stopPortWatcher() {
   if (portsWatchProcess_) {
-    portsWatchProcess_->kill();
-    portsWatchProcess_->waitForFinished();
+    if (portsWatchProcess_->state() != QProcess::NotRunning) {
+      portsWatchProcess_->terminate();
+      if (!portsWatchProcess_->waitForFinished(750)) {
+        portsWatchProcess_->kill();
+        (void)portsWatchProcess_->waitForFinished(750);
+      }
+    }
     portsWatchProcess_->deleteLater();
     portsWatchProcess_ = nullptr;
   }
