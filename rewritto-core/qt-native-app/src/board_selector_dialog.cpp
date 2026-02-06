@@ -435,11 +435,23 @@ void BoardSelectorDialog::setCurrentFqbn(QString fqbn) {
     return;
   }
 
-  const QModelIndex nameIndex = proxyIdx.sibling(proxyIdx.row(), kColName);
-  table_->setCurrentIndex(nameIndex);
   if (!filterEdit_ || filterEdit_->text().trimmed().isEmpty()) {
     table_->collapseAll();
+    const QModelIndex parent = proxyIdx.parent();
+    const QModelIndex coreNameIndex =
+        parent.isValid() ? parent.sibling(parent.row(), kColName) : QModelIndex();
+    if (coreNameIndex.isValid()) {
+      table_->setCurrentIndex(coreNameIndex);
+    } else {
+      table_->clearSelection();
+    }
+    table_->scrollToTop();
+    if (selectButton_) {
+      selectButton_->setEnabled(false);
+    }
   } else {
+    const QModelIndex nameIndex = proxyIdx.sibling(proxyIdx.row(), kColName);
+    table_->setCurrentIndex(nameIndex);
     QModelIndex parent = proxyIdx.parent();
     while (parent.isValid()) {
       table_->expand(parent);
