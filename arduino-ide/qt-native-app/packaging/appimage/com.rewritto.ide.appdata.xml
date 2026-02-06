@@ -9,10 +9,12 @@
     <name>Rewritto</name>
   </developer>
   <description>
-    <p>Rewritto Ide is a native Qt6 Arduino-compatible IDE for Linux.</p>
+    <p>Rewritto Ide is a native Qt6 Arduino-compatible IDE for Linux with a desktop-first workflow focused on board, library, build, upload, and serial tooling parity.</p>
     <p>It integrates with Arduino CLI for board and library management, compiling, and uploading sketches.</p>
   </description>
   <launchable type="desktop-id">com.rewritto.ide.desktop</launchable>
+  <url type="homepage">https://github.com/lolren/rewritto-ide</url>
+  <url type="bugtracker">https://github.com/lolren/rewritto-ide/issues</url>
   <provides>
     <binary>rewritto-ide</binary>
   </provides>
