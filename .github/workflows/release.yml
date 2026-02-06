@@ -38,10 +38,19 @@ jobs:
             curl \
             desktop-file-utils \
             libgl1-mesa-dev \
+            libxkbcommon-x11-dev \
             patchelf \
-            pkg-config \
-            qt6-base-dev \
-            qt6-tools-dev
+            pkg-config
+
+      - name: Install Qt for Linux
+        if: matrix.target == 'linux'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.7.2"
+          host: "linux"
+          target: "desktop"
+          arch: "gcc_64"
+          cache: true
 
       - name: Install Qt for Windows
         if: matrix.target == 'windows'
@@ -57,7 +66,10 @@ jobs:
         if: matrix.target == 'linux'
         run: |
           mkdir -p release-artifacts
-          cmake -S rewritto-core/qt-native-app -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -S rewritto-core/qt-native-app -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DQt6_DIR="$QT_ROOT_DIR/lib/cmake/Qt6"
           cmake --build build -j"$(nproc)"
 
           chmod +x rewritto-core/qt-native-app/packaging/release/package-native.sh
