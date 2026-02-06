@@ -352,6 +352,7 @@ class MainWindow final : public QMainWindow {
   void enforceToolbarLayout();
   void updateFontFromToolbar();
   void setContextToolbarMode(ContextToolbarMode mode);
+  void restyleContextModeToolBar();
   void rebuildContextToolbar();
   void wireSignals();
   void rebuildRecentSketchesMenu();

@@ -36,8 +36,10 @@
 #include <QAbstractButton>
 #include <QAction>
 #include <QActionGroup>
+#include <QApplication>
 #include <QClipboard>
 #include <QCloseEvent>
+#include <QColor>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -144,6 +146,25 @@ constexpr int kPortRoleProtocol = Qt::UserRole + 303;
 constexpr int kPortRoleMissing = Qt::UserRole + 304;
 
 constexpr int kRoleIsFavorite = Qt::UserRole + 1;
+
+QColor blendColors(const QColor& first, const QColor& second, qreal secondWeight) {
+  const qreal clampedWeight = std::clamp(secondWeight, 0.0, 1.0);
+  const qreal firstWeight = 1.0 - clampedWeight;
+  return QColor::fromRgbF(
+      first.redF() * firstWeight + second.redF() * clampedWeight,
+      first.greenF() * firstWeight + second.greenF() * clampedWeight,
+      first.blueF() * firstWeight + second.blueF() * clampedWeight,
+      first.alphaF() * firstWeight + second.alphaF() * clampedWeight);
+}
+
+QString colorHex(const QColor& color) {
+  return color.name(QColor::HexRgb);
+}
+
+QColor readableForeground(const QColor& background) {
+  return background.lightnessF() >= 0.55 ? QColor(QStringLiteral("#0f172a"))
+                                         : QColor(QStringLiteral("#f8fafc"));
+}
 
 bool isLikelyUf2VolumeName(QString name) {
   name = name.trimmed().toLower();
@@ -619,6 +640,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   createActions();
   createMenus();
   createLayout();
+  if (auto* app = qobject_cast<QApplication*>(QCoreApplication::instance())) {
+    app->installEventFilter(this);
+  }
 	updateSketchbookView();
   {
     QSettings settings;
@@ -1258,6 +1282,7 @@ void MainWindow::createMenus() {
     connect(dialog, &PreferencesDialog::themePreviewRequested, this,
             [this](const QString& theme) {
               ThemeManager::apply(theme);
+              rebuildContextToolbar();
               if (editor_) {
                 editor_->setTheme(isThemeDark(theme));
               }
@@ -1306,6 +1331,7 @@ void MainWindow::createMenus() {
       // Apply theme + UI scale
       UiScaleManager::apply(dialog->uiScale());
       ThemeManager::apply(dialog->theme());
+      rebuildContextToolbar();
 
       // Apply editor settings
       if (editor_) {
@@ -1350,6 +1376,7 @@ void MainWindow::createMenus() {
     } else {
       UiScaleManager::apply(initialUiScale);
       ThemeManager::apply(initialTheme);
+      rebuildContextToolbar();
       if (editor_) {
         editor_->setTheme(isThemeDark(initialTheme));
       }
@@ -1981,43 +2008,7 @@ void MainWindow::createLayout() {
     widget->setObjectName("ContextModeSnapshotsButton");
   }
 
-  contextModeToolBar_->setStyleSheet(
-      "QToolBar#ContextModeBar {"
-      "  background-color: #0f172a;"
-      "  border: none;"
-      "  border-left: 1px solid rgba(255,255,255,0.14);"
-      "  spacing: 6px;"
-      "  padding: 8px 3px;"
-      "  min-width: 44px;"
-      "  max-width: 44px;"
-      "}"
-      "QToolBar#ContextModeBar QToolButton {"
-      "  border: none;"
-      "  border-radius: 8px;"
-      "  padding: 8px;"
-      "  margin: 1px 0;"
-      "}"
-      "QToolBar#ContextModeBar QToolButton:hover {"
-      "  background-color: rgba(255,255,255,0.15);"
-      "}"
-      "QToolBar#ContextModeBar QToolButton#ContextModeBuildButton {"
-      "  border-right: 3px solid #f59e0b;"
-      "}"
-      "QToolBar#ContextModeBar QToolButton#ContextModeFontsButton {"
-      "  border-right: 3px solid #38bdf8;"
-      "}"
-      "QToolBar#ContextModeBar QToolButton#ContextModeSnapshotsButton {"
-      "  border-right: 3px solid #22c55e;"
-      "}"
-      "QToolBar#ContextModeBar QToolButton#ContextModeBuildButton:checked {"
-      "  background-color: rgba(245,158,11,0.30);"
-      "}"
-      "QToolBar#ContextModeBar QToolButton#ContextModeFontsButton:checked {"
-      "  background-color: rgba(56,189,248,0.30);"
-      "}"
-      "QToolBar#ContextModeBar QToolButton#ContextModeSnapshotsButton:checked {"
-      "  background-color: rgba(34,197,94,0.30);"
-      "}");
+  restyleContextModeToolBar();
 
   auto* contextModeGroup = new QActionGroup(this);
   contextModeGroup->setExclusive(true);
@@ -2914,6 +2905,13 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    if ((watched == this || watched == qApp) &&
+        (event->type() == QEvent::ApplicationPaletteChange ||
+         event->type() == QEvent::PaletteChange ||
+         event->type() == QEvent::StyleChange)) {
+        rebuildContextToolbar();
+    }
+
     if (boardCombo_ && watched == boardCombo_) {
         if (event->type() == QEvent::MouseButtonPress) {
             showSelectBoardDialog();
@@ -6109,6 +6107,82 @@ void MainWindow::updateBoardPortIndicator() {
   }
 }
 
+void MainWindow::restyleContextModeToolBar() {
+  if (!contextModeToolBar_) {
+    return;
+  }
+
+  const QPalette pal = palette();
+  const QColor panelColor = pal.color(QPalette::Window);
+  const QColor textColor = pal.color(QPalette::WindowText);
+  const QColor borderColor = pal.color(QPalette::Mid);
+  const bool darkTheme = panelColor.lightnessF() < 0.5;
+
+  const QColor buildAccent = QColor(QStringLiteral("#f59e0b"));
+  const QColor fontsAccent = QColor(QStringLiteral("#38bdf8"));
+  const QColor snapshotsAccent = QColor(QStringLiteral("#22c55e"));
+
+  const QColor barBackground = blendColors(
+      panelColor, pal.color(QPalette::Base), darkTheme ? 0.22 : 0.06);
+  const QColor barBorder = blendColors(
+      borderColor, pal.color(QPalette::Highlight), darkTheme ? 0.35 : 0.18);
+  const QColor hoverBackground =
+      blendColors(barBackground, textColor, darkTheme ? 0.14 : 0.08);
+  const QColor buildChecked =
+      blendColors(barBackground, buildAccent, darkTheme ? 0.55 : 0.34);
+  const QColor fontsChecked =
+      blendColors(barBackground, fontsAccent, darkTheme ? 0.55 : 0.34);
+  const QColor snapshotsChecked =
+      blendColors(barBackground, snapshotsAccent, darkTheme ? 0.55 : 0.34);
+  const QColor checkedText = readableForeground(buildChecked);
+
+  contextModeToolBar_->setStyleSheet(QString(
+      "QToolBar#ContextModeBar {"
+      "  background-color: %1;"
+      "  border: none;"
+      "  border-left: 1px solid %2;"
+      "  spacing: 6px;"
+      "  padding: 8px 3px;"
+      "  min-width: 44px;"
+      "  max-width: 44px;"
+      "}"
+      "QToolBar#ContextModeBar QToolButton {"
+      "  color: %3;"
+      "  border: none;"
+      "  border-radius: 8px;"
+      "  padding: 8px;"
+      "  margin: 1px 0;"
+      "}"
+      "QToolBar#ContextModeBar QToolButton:hover {"
+      "  background-color: %4;"
+      "}"
+      "QToolBar#ContextModeBar QToolButton#ContextModeBuildButton {"
+      "  border-right: 3px solid %5;"
+      "}"
+      "QToolBar#ContextModeBar QToolButton#ContextModeFontsButton {"
+      "  border-right: 3px solid %6;"
+      "}"
+      "QToolBar#ContextModeBar QToolButton#ContextModeSnapshotsButton {"
+      "  border-right: 3px solid %7;"
+      "}"
+      "QToolBar#ContextModeBar QToolButton#ContextModeBuildButton:checked {"
+      "  background-color: %8;"
+      "  color: %11;"
+      "}"
+      "QToolBar#ContextModeBar QToolButton#ContextModeFontsButton:checked {"
+      "  background-color: %9;"
+      "  color: %11;"
+      "}"
+      "QToolBar#ContextModeBar QToolButton#ContextModeSnapshotsButton:checked {"
+      "  background-color: %10;"
+      "  color: %11;"
+      "}")
+      .arg(colorHex(barBackground), colorHex(barBorder), colorHex(textColor),
+           colorHex(hoverBackground), colorHex(buildAccent), colorHex(fontsAccent),
+           colorHex(snapshotsAccent), colorHex(buildChecked), colorHex(fontsChecked),
+           colorHex(snapshotsChecked), colorHex(checkedText)));
+}
+
 void MainWindow::enforceToolbarLayout() {
   if (!buildToolBar_ || !fontToolBar_) {
     return;
@@ -6158,40 +6232,57 @@ void MainWindow::rebuildContextToolbar() {
   fontFamilyCombo_ = nullptr;
   fontSizeCombo_ = nullptr;
   fontToolBar_->clear();
+  restyleContextModeToolBar();
 
+  const QPalette pal = palette();
+  const QColor panelColor = pal.color(QPalette::Window);
+  const QColor baseColor = pal.color(QPalette::Base);
+  const QColor textColor = pal.color(QPalette::WindowText);
+  const QColor borderBase = pal.color(QPalette::Mid);
+  const QColor highlightColor = pal.color(QPalette::Highlight);
+  const bool darkTheme = panelColor.lightnessF() < 0.5;
+
+  QColor modeAccent;
   QString title;
-  QString gradientStart;
-  QString gradientEnd;
-  QString borderColor;
-  QString textColor;
-  QString accentColor;
-
   switch (contextToolbarMode_) {
     case ContextToolbarMode::Build:
       title = tr("Build");
-      gradientStart = "#fef3c7";
-      gradientEnd = "#fde68a";
-      borderColor = "#f59e0b";
-      textColor = "#5b3a00";
-      accentColor = "#d97706";
+      modeAccent = QColor(QStringLiteral("#f59e0b"));
       break;
     case ContextToolbarMode::Fonts:
       title = tr("Fonts");
-      gradientStart = "#f8fafc";
-      gradientEnd = "#e2e8f0";
-      borderColor = "#94a3b8";
-      textColor = "#0f172a";
-      accentColor = "#0284c7";
+      modeAccent = QColor(QStringLiteral("#38bdf8"));
       break;
     case ContextToolbarMode::Snapshots:
       title = tr("Snapshots");
-      gradientStart = "#dcfce7";
-      gradientEnd = "#bbf7d0";
-      borderColor = "#22c55e";
-      textColor = "#14532d";
-      accentColor = "#15803d";
+      modeAccent = QColor(QStringLiteral("#22c55e"));
       break;
   }
+
+  const QColor accentColor = blendColors(modeAccent, highlightColor, 0.25);
+  const QColor gradientStartColor =
+      blendColors(panelColor, accentColor, darkTheme ? 0.24 : 0.10);
+  const QColor gradientEndColor =
+      blendColors(panelColor, accentColor, darkTheme ? 0.14 : 0.05);
+  const QColor borderColor =
+      blendColors(borderBase, accentColor, darkTheme ? 0.60 : 0.32);
+  const QColor toolbarTextColor =
+      blendColors(textColor, accentColor, darkTheme ? 0.04 : 0.08);
+  const QColor buttonBackground =
+      blendColors(panelColor, accentColor, darkTheme ? 0.32 : 0.12);
+  const QColor buttonBorder =
+      blendColors(borderBase, accentColor, darkTheme ? 0.60 : 0.34);
+  const QColor buttonHover =
+      blendColors(buttonBackground, textColor, darkTheme ? 0.16 : 0.08);
+  const QColor buttonPressed =
+      blendColors(buttonBackground, textColor, darkTheme ? 0.24 : 0.14);
+  const QColor checkedBackground =
+      blendColors(accentColor, highlightColor, darkTheme ? 0.22 : 0.10);
+  const QColor checkedTextColor = readableForeground(checkedBackground);
+  const QColor comboBackground =
+      blendColors(baseColor, accentColor, darkTheme ? 0.34 : 0.10);
+  const QColor comboBorder =
+      blendColors(borderBase, accentColor, darkTheme ? 0.60 : 0.30);
 
   fontToolBar_->setStyleSheet(QString(
       "QToolBar#ContextToolBar {"
@@ -6209,27 +6300,27 @@ void MainWindow::rebuildContextToolbar() {
       "}"
       "QToolBar#ContextToolBar QToolButton {"
       "  color: %4;"
-      "  border: 1px solid rgba(255,255,255,0.45);"
+      "  border: 1px solid %6;"
       "  border-radius: 6px;"
-      "  background-color: rgba(255,255,255,0.24);"
+      "  background-color: %7;"
       "  padding: 5px 8px;"
       "}"
       "QToolBar#ContextToolBar QToolButton:hover {"
-      "  background-color: rgba(255,255,255,0.40);"
+      "  background-color: %8;"
       "}"
       "QToolBar#ContextToolBar QToolButton:pressed {"
-      "  background-color: rgba(255,255,255,0.55);"
+      "  background-color: %9;"
       "}"
       "QToolBar#ContextToolBar QToolButton:checked {"
-      "  background-color: %5;"
-      "  border-color: %5;"
-      "  color: #ffffff;"
+      "  background-color: %10;"
+      "  border-color: %10;"
+      "  color: %11;"
       "}"
       "QToolBar#ContextToolBar QComboBox {"
       "  color: %4;"
-      "  border: 1px solid rgba(255,255,255,0.60);"
+      "  border: 1px solid %12;"
       "  border-radius: 6px;"
-      "  background-color: rgba(255,255,255,0.35);"
+      "  background-color: %13;"
       "  padding: 3px 22px 3px 8px;"
       "  min-height: 22px;"
       "}"
@@ -6237,7 +6328,12 @@ void MainWindow::rebuildContextToolbar() {
       "  border: none;"
       "  width: 20px;"
       "}")
-      .arg(gradientStart, gradientEnd, borderColor, textColor, accentColor));
+      .arg(colorHex(gradientStartColor), colorHex(gradientEndColor),
+           colorHex(borderColor), colorHex(toolbarTextColor), colorHex(accentColor),
+           colorHex(buttonBorder), colorHex(buttonBackground), colorHex(buttonHover),
+           colorHex(buttonPressed), colorHex(checkedBackground),
+           colorHex(checkedTextColor), colorHex(comboBorder),
+           colorHex(comboBackground)));
 
   auto* titleLabel = new QLabel(title, fontToolBar_);
   titleLabel->setObjectName("ContextToolbarTitle");
