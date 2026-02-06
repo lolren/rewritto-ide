@@ -170,6 +170,33 @@ QColor readableForeground(const QColor& background) {
                                          : QColor(QStringLiteral("#f8fafc"));
 }
 
+bool sendLinuxDesktopNotification(const QString& summary,
+                                  const QString& body,
+                                  int timeoutMs) {
+#if defined(Q_OS_LINUX)
+  static const QString notifySendPath =
+      QStandardPaths::findExecutable(QStringLiteral("notify-send"));
+  if (notifySendPath.isEmpty()) {
+    return false;
+  }
+
+  QStringList args;
+  args << QStringLiteral("--app-name") << QStringLiteral("Rewritto IDE");
+  args << QStringLiteral("--icon") << QStringLiteral("applications-development");
+  if (timeoutMs >= 0) {
+    args << QStringLiteral("--expire-time") << QString::number(timeoutMs);
+  }
+  args << summary;
+  args << body;
+  return QProcess::startDetached(notifySendPath, args);
+#else
+  Q_UNUSED(summary);
+  Q_UNUSED(body);
+  Q_UNUSED(timeoutMs);
+  return false;
+#endif
+}
+
 bool isLikelyUf2VolumeName(QString name) {
   name = name.trimmed().toLower();
   if (name.isEmpty()) {
@@ -6023,8 +6050,20 @@ bool MainWindow::createZipArchive(const QString& sourceDir, const QString& zipPa
 }
 
 void MainWindow::showToast(const QString& message, int timeoutMs) {
+  const QString trimmed = message.trimmed();
+  if (trimmed.isEmpty()) {
+    return;
+  }
+
+  const QString summary = windowTitle().trimmed().isEmpty()
+                              ? QStringLiteral("Rewritto IDE")
+                              : windowTitle().trimmed();
+  if (sendLinuxDesktopNotification(summary, trimmed, timeoutMs)) {
+    return;
+  }
+
   if (toast_) {
-    toast_->showToast(message, QString(), std::function<void()>(), timeoutMs);
+    toast_->showToast(trimmed, QString(), std::function<void()>(), timeoutMs);
   }
 }
 
@@ -6032,9 +6071,17 @@ void MainWindow::showToastWithAction(const QString& message,
                                      const QString& actionText,
                                      std::function<void()> action,
                                      int timeoutMs) {
-  if (toast_) {
+  if (toast_ && !actionText.trimmed().isEmpty()) {
     toast_->showToast(message, actionText, action, timeoutMs);
+    return;
   }
+
+  if (toast_ && action) {
+    toast_->showToast(message, actionText, action, timeoutMs);
+    return;
+  }
+
+  showToast(message, timeoutMs);
 }
 
 // === Sketch and Recent Files Management ===
