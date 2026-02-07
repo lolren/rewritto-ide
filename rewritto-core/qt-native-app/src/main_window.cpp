@@ -4571,6 +4571,8 @@ void MainWindow::rebuildIncludeLibraryMenu() {
   }
 
   clearIncludeLibraryMenuActions();
+  const bool cliAvailable =
+      arduinoCli_ && !arduinoCli_->arduinoCliPath().trimmed().isEmpty();
 
   auto addDisabledItem = [this](const QString& text) {
     if (!includeLibraryMenu_) {
@@ -4581,8 +4583,40 @@ void MainWindow::rebuildIncludeLibraryMenu() {
     includeLibraryMenuActions_.push_back(action);
   };
 
-  if (!arduinoCli_ || arduinoCli_->arduinoCliPath().trimmed().isEmpty()) {
+  auto addFooterActions = [this, cliAvailable]() {
+    if (!includeLibraryMenu_) {
+      return;
+    }
+
+    if (!actionAddZipLibrary_ && !actionManageLibraries_) {
+      return;
+    }
+
+    if (!includeLibraryMenu_->actions().isEmpty()) {
+      QAction* separator = includeLibraryMenu_->addSeparator();
+      includeLibraryMenuActions_.push_back(separator);
+    }
+
+    if (actionAddZipLibrary_) {
+      QAction* addZip = includeLibraryMenu_->addAction(actionAddZipLibrary_->text());
+      addZip->setEnabled(cliAvailable);
+      includeLibraryMenuActions_.push_back(addZip);
+      connect(addZip, &QAction::triggered, this,
+              [this] { actionAddZipLibrary_->trigger(); });
+    }
+
+    if (actionManageLibraries_) {
+      QAction* manage =
+          includeLibraryMenu_->addAction(actionManageLibraries_->text());
+      includeLibraryMenuActions_.push_back(manage);
+      connect(manage, &QAction::triggered, this,
+              [this] { actionManageLibraries_->trigger(); });
+    }
+  };
+
+  if (!cliAvailable) {
     addDisabledItem(tr("Arduino CLI unavailable"));
+    addFooterActions();
     return;
   }
 
@@ -4598,7 +4632,8 @@ void MainWindow::rebuildIncludeLibraryMenu() {
   connect(process,
           QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
           this,
-          [this, process, addDisabledItem](int exitCode, QProcess::ExitStatus) {
+          [this, process, addDisabledItem, addFooterActions](int exitCode,
+                                                              QProcess::ExitStatus) {
             if (includeLibraryProcess_ == process) {
               includeLibraryProcess_ = nullptr;
             }
@@ -4618,12 +4653,14 @@ void MainWindow::rebuildIncludeLibraryMenu() {
                                         .arg(QString::fromUtf8(err).trimmed()));
               }
               addDisabledItem(tr("Failed to load installed libraries"));
+              addFooterActions();
               return;
             }
 
             const QJsonDocument doc = QJsonDocument::fromJson(out);
             if (!doc.isObject()) {
               addDisabledItem(tr("Failed to parse installed libraries"));
+              addFooterActions();
               return;
             }
 
@@ -4683,20 +4720,11 @@ void MainWindow::rebuildIncludeLibraryMenu() {
             if (!addedAny) {
               addDisabledItem(tr("No includable installed libraries"));
             }
-
-            if (actionManageLibraries_) {
-              QAction* separator = includeLibraryMenu_->addSeparator();
-              includeLibraryMenuActions_.push_back(separator);
-              QAction* manage = includeLibraryMenu_->addAction(
-                  tr("Manage Libraries..."));
-              includeLibraryMenuActions_.push_back(manage);
-              connect(manage, &QAction::triggered, this, [this] {
-                actionManageLibraries_->trigger();
-              });
-            }
+            addFooterActions();
           });
 
-  connect(process, &QProcess::errorOccurred, this, [this, process](QProcess::ProcessError) {
+  connect(process, &QProcess::errorOccurred, this,
+          [this, process, addFooterActions](QProcess::ProcessError) {
     if (includeLibraryProcess_ == process) {
       includeLibraryProcess_ = nullptr;
     }
@@ -4708,6 +4736,7 @@ void MainWindow::rebuildIncludeLibraryMenu() {
       failed->setEnabled(false);
       includeLibraryMenuActions_.push_back(failed);
     }
+    addFooterActions();
   });
 
   const QStringList args = arduinoCli_->withGlobalFlags(
