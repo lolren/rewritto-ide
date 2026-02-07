@@ -34,7 +34,9 @@
 #include <QDesktopServices>
 
 #include <algorithm>
+#include <cstdlib>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <QAbstractButton>
 #include <QAction>
@@ -53,6 +55,7 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QDirIterator>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -121,7 +124,7 @@
 #include <QWizard>
 
 #ifndef REWRITTO_IDE_VERSION
-#define REWRITTO_IDE_VERSION "0.4.0"
+#define REWRITTO_IDE_VERSION "0.4.4"
 #endif
 
 static constexpr auto kSettingsGroup = "MainWindow";
@@ -854,6 +857,416 @@ QString commandErrorSummary(const CommandResult& result) {
   return QObject::tr("Command failed (exit code %1).").arg(result.exitCode);
 }
 
+QString defaultArduinoDataDirPath() {
+#if defined(Q_OS_WIN)
+  QString localAppData = qEnvironmentVariable("LOCALAPPDATA").trimmed();
+  if (localAppData.isEmpty()) {
+    localAppData = QDir(QDir::homePath())
+                       .absoluteFilePath(QStringLiteral("AppData/Local"));
+  }
+  return QDir(localAppData).absoluteFilePath(QStringLiteral("Arduino15"));
+#else
+  return QDir(QDir::homePath()).absoluteFilePath(QStringLiteral(".arduino15"));
+#endif
+}
+
+bool removePathIfExists(const QString& path) {
+  if (path.trimmed().isEmpty()) {
+    return true;
+  }
+  const QFileInfo info(path);
+  if (!info.exists() && !info.isSymLink()) {
+    return true;
+  }
+  if (info.isDir() && !info.isSymLink()) {
+    return QDir(path).removeRecursively();
+  }
+  return QFile::remove(path);
+}
+
+bool copyDirectoryRecursivelyMerged(const QString& sourceDir,
+                                    const QString& targetDir,
+                                    QString* outError) {
+  const QDir srcRoot(sourceDir);
+  if (!srcRoot.exists()) {
+    if (outError) {
+      *outError = QObject::tr("Source folder does not exist: %1").arg(sourceDir);
+    }
+    return false;
+  }
+  if (!QDir().mkpath(targetDir)) {
+    if (outError) {
+      *outError =
+          QObject::tr("Could not create destination folder: %1").arg(targetDir);
+    }
+    return false;
+  }
+
+  QDirIterator it(sourceDir,
+                  QDir::NoDotAndDotDot | QDir::AllEntries | QDir::Hidden |
+                      QDir::System,
+                  QDirIterator::Subdirectories);
+  while (it.hasNext()) {
+    const QString srcPath = it.next();
+    const QFileInfo srcInfo(srcPath);
+    const QString rel = srcRoot.relativeFilePath(srcPath);
+    if (rel.trimmed().isEmpty() || rel == QStringLiteral(".")) {
+      continue;
+    }
+    const QString dstPath = QDir(targetDir).absoluteFilePath(rel);
+
+    if (srcInfo.isDir() && !srcInfo.isSymLink()) {
+      if (!QDir().mkpath(dstPath)) {
+        if (outError) {
+          *outError = QObject::tr("Could not create folder: %1").arg(dstPath);
+        }
+        return false;
+      }
+      continue;
+    }
+
+    if (!srcInfo.isFile() && !srcInfo.isSymLink()) {
+      continue;
+    }
+
+    if (!QDir().mkpath(QFileInfo(dstPath).absolutePath())) {
+      if (outError) {
+        *outError = QObject::tr("Could not create folder: %1")
+                        .arg(QFileInfo(dstPath).absolutePath());
+      }
+      return false;
+    }
+    if (!removePathIfExists(dstPath)) {
+      if (outError) {
+        *outError = QObject::tr("Could not replace path: %1").arg(dstPath);
+      }
+      return false;
+    }
+
+    bool copied = false;
+    if (srcInfo.isSymLink()) {
+      const QString linkTarget = srcInfo.symLinkTarget();
+      if (!linkTarget.isEmpty()) {
+        copied = QFile::link(linkTarget, dstPath);
+      }
+    }
+    if (!copied) {
+      copied = QFile::copy(srcPath, dstPath);
+    }
+    if (!copied) {
+      if (outError) {
+        *outError = QObject::tr("Could not copy file: %1").arg(rel);
+      }
+      return false;
+    }
+  }
+
+  if (outError) {
+    outError->clear();
+  }
+  return true;
+}
+
+bool extractZipArchive(const QString& zipPath,
+                       const QString& destinationDir,
+                       QString* outError) {
+  if (!QFileInfo(zipPath).isFile()) {
+    if (outError) {
+      *outError = QObject::tr("Archive file does not exist.");
+    }
+    return false;
+  }
+  if (!QDir().mkpath(destinationDir)) {
+    if (outError) {
+      *outError = QObject::tr("Could not create extraction folder.");
+    }
+    return false;
+  }
+
+  const QString unzipPath =
+      QStandardPaths::findExecutable(QStringLiteral("unzip"));
+  if (!unzipPath.isEmpty()) {
+    const CommandResult result = runCommandBlocking(
+        unzipPath,
+        {QStringLiteral("-oq"), zipPath, QStringLiteral("-d"), destinationDir},
+        {}, {}, 900000);
+    if (result.started && !result.timedOut &&
+        result.exitStatus == QProcess::NormalExit && result.exitCode == 0) {
+      if (outError) {
+        outError->clear();
+      }
+      return true;
+    }
+    if (outError) {
+      *outError = commandErrorSummary(result);
+    }
+  }
+
+  const QString bsdtarPath =
+      QStandardPaths::findExecutable(QStringLiteral("bsdtar"));
+  if (!bsdtarPath.isEmpty()) {
+    const CommandResult result = runCommandBlocking(
+        bsdtarPath,
+        {QStringLiteral("-xf"), zipPath, QStringLiteral("-C"), destinationDir},
+        {}, {}, 900000);
+    if (result.started && !result.timedOut &&
+        result.exitStatus == QProcess::NormalExit && result.exitCode == 0) {
+      if (outError) {
+        outError->clear();
+      }
+      return true;
+    }
+    if (outError) {
+      *outError = commandErrorSummary(result);
+    }
+  }
+
+  const QString tarPath = QStandardPaths::findExecutable(QStringLiteral("tar"));
+  if (!tarPath.isEmpty()) {
+    const CommandResult result = runCommandBlocking(
+        tarPath,
+        {QStringLiteral("-xf"), zipPath, QStringLiteral("-C"), destinationDir},
+        {}, {}, 900000);
+    if (result.started && !result.timedOut &&
+        result.exitStatus == QProcess::NormalExit && result.exitCode == 0) {
+      if (outError) {
+        outError->clear();
+      }
+      return true;
+    }
+    if (outError) {
+      *outError = commandErrorSummary(result);
+    }
+  }
+
+  if (outError && outError->trimmed().isEmpty()) {
+    *outError = QObject::tr("No archive extractor available (need unzip or tar).");
+  }
+  return false;
+}
+
+QString findBundleRootDirectory(const QString& extractedRoot,
+                                const QString& manifestFileName) {
+  const QString directManifest =
+      QDir(extractedRoot).absoluteFilePath(manifestFileName);
+  if (QFileInfo::exists(directManifest)) {
+    return QDir(extractedRoot).absolutePath();
+  }
+
+  QDirIterator it(extractedRoot, QDir::Dirs | QDir::NoDotAndDotDot,
+                  QDirIterator::Subdirectories);
+  while (it.hasNext()) {
+    const QString dirPath = it.next();
+    if (QFileInfo::exists(QDir(dirPath).absoluteFilePath(manifestFileName))) {
+      return QDir(dirPath).absolutePath();
+    }
+  }
+  return {};
+}
+
+struct ArduinoCliDirectories final {
+  QString dataDir;
+  QString userDir;
+};
+
+ArduinoCliDirectories readArduinoCliDirectories(const QString& cliPath,
+                                                QStringList globalFlags) {
+  ArduinoCliDirectories out;
+  const QString trimmedCli = cliPath.trimmed();
+  if (trimmedCli.isEmpty()) {
+    return out;
+  }
+
+  globalFlags << QStringLiteral("config")
+              << QStringLiteral("dump")
+              << QStringLiteral("--format")
+              << QStringLiteral("json");
+  const CommandResult result =
+      runCommandBlocking(trimmedCli, globalFlags, {}, {}, 15000);
+  if (!(result.started && !result.timedOut &&
+        result.exitStatus == QProcess::NormalExit && result.exitCode == 0)) {
+    return out;
+  }
+
+  const QJsonDocument doc =
+      QJsonDocument::fromJson(result.stdoutText.toUtf8());
+  if (!doc.isObject()) {
+    return out;
+  }
+  const QJsonObject directories =
+      doc.object().value(QStringLiteral("directories")).toObject();
+  out.dataDir =
+      directories.value(QStringLiteral("data")).toString().trimmed();
+  out.userDir =
+      directories.value(QStringLiteral("user")).toString().trimmed();
+  return out;
+}
+
+QString formatByteSize(qint64 bytes) {
+  if (bytes < 0) {
+    return QObject::tr("unknown size");
+  }
+  static const QStringList units = {QStringLiteral("B"), QStringLiteral("KB"),
+                                    QStringLiteral("MB"), QStringLiteral("GB"),
+                                    QStringLiteral("TB")};
+  double size = static_cast<double>(bytes);
+  int unitIndex = 0;
+  while (size >= 1024.0 && unitIndex < units.size() - 1) {
+    size /= 1024.0;
+    ++unitIndex;
+  }
+  const int precision = (unitIndex == 0 || size >= 100.0) ? 0 : 1;
+  return QStringLiteral("%1 %2")
+      .arg(QString::number(size, 'f', precision), units.at(unitIndex));
+}
+
+QString formatElapsedTimeMs(qint64 elapsedMs) {
+  const qint64 totalSeconds = qMax<qint64>(0, elapsedMs / 1000);
+  const qint64 minutes = totalSeconds / 60;
+  const qint64 seconds = totalSeconds % 60;
+  if (minutes <= 0) {
+    return QObject::tr("%1s").arg(seconds);
+  }
+  return QObject::tr("%1m %2s").arg(minutes).arg(seconds);
+}
+
+qint64 directorySizeBytes(const QString& rootPath) {
+  if (rootPath.trimmed().isEmpty() || !QFileInfo(rootPath).isDir()) {
+    return 0;
+  }
+  qint64 total = 0;
+  QDirIterator it(rootPath, QDir::Files | QDir::NoDotAndDotDot,
+                  QDirIterator::Subdirectories);
+  while (it.hasNext()) {
+    const QFileInfo info(it.next());
+    if (info.isFile()) {
+      total += info.size();
+    }
+  }
+  return total;
+}
+
+bool isLikelyBuildArtifactFile(const QString& fileName) {
+  const QString lower = fileName.trimmed().toLower();
+  if (lower.isEmpty()) {
+    return false;
+  }
+  static const QStringList suffixes = {
+      QStringLiteral(".uf2"), QStringLiteral(".hex"), QStringLiteral(".bin"),
+      QStringLiteral(".elf"), QStringLiteral(".map"), QStringLiteral(".eep"),
+      QStringLiteral(".zip"),
+  };
+  for (const QString& suffix : suffixes) {
+    if (lower.endsWith(suffix)) {
+      return true;
+    }
+  }
+  return lower == QStringLiteral("build.options.json");
+}
+
+bool copyBuildArtifactsForSketch(const QString& buildRoot,
+                                 const QString& sketchName,
+                                 const QString& destinationRoot,
+                                 QStringList* outCopiedRelativeFiles,
+                                 QString* outError) {
+  const QString normalizedSketchName = sketchName.trimmed().toLower();
+  const QDir srcRoot(buildRoot);
+  if (!srcRoot.exists()) {
+    if (outError) {
+      *outError = QObject::tr("Build artifacts folder does not exist.");
+    }
+    return false;
+  }
+  if (!QDir().mkpath(destinationRoot)) {
+    if (outError) {
+      *outError = QObject::tr("Could not create destination artifacts folder.");
+    }
+    return false;
+  }
+
+  QStringList candidates;
+  QHash<QString, QString> absByRel;
+  QDirIterator it(buildRoot, QDir::Files | QDir::NoDotAndDotDot,
+                  QDirIterator::Subdirectories);
+  while (it.hasNext()) {
+    const QString absPath = it.next();
+    const QFileInfo info(absPath);
+    if (!info.isFile() || !isLikelyBuildArtifactFile(info.fileName())) {
+      continue;
+    }
+    const QString rel = srcRoot.relativeFilePath(absPath);
+    if (rel.trimmed().isEmpty()) {
+      continue;
+    }
+    candidates << rel;
+    absByRel.insert(rel, absPath);
+  }
+  if (candidates.isEmpty()) {
+    if (outError) {
+      *outError = QObject::tr("No build artifact files were found.");
+    }
+    return false;
+  }
+
+  QStringList prioritized;
+  QStringList fallback;
+  for (const QString& rel : candidates) {
+    const QString fileName = QFileInfo(rel).fileName().toLower();
+    const bool sketchMatch = normalizedSketchName.isEmpty() ||
+                             fileName.startsWith(normalizedSketchName + QLatin1Char('.')) ||
+                             fileName.startsWith(normalizedSketchName + QLatin1Char('_')) ||
+                             fileName.contains(normalizedSketchName);
+    if (sketchMatch) {
+      prioritized << rel;
+    } else {
+      fallback << rel;
+    }
+  }
+  QStringList chosen = prioritized.isEmpty() ? fallback : prioritized;
+  std::sort(chosen.begin(), chosen.end(), [](const QString& a, const QString& b) {
+    return QString::localeAwareCompare(a, b) < 0;
+  });
+
+  QStringList copied;
+  for (const QString& rel : chosen) {
+    const QString srcPath = absByRel.value(rel);
+    if (srcPath.isEmpty()) {
+      continue;
+    }
+    const QString dstPath = QDir(destinationRoot).absoluteFilePath(rel);
+    if (!QDir().mkpath(QFileInfo(dstPath).absolutePath())) {
+      if (outError) {
+        *outError =
+            QObject::tr("Could not create destination for artifact '%1'.").arg(rel);
+      }
+      return false;
+    }
+    (void)removePathIfExists(dstPath);
+    if (!QFile::copy(srcPath, dstPath)) {
+      if (outError) {
+        *outError = QObject::tr("Could not copy artifact '%1'.").arg(rel);
+      }
+      return false;
+    }
+    copied << rel;
+  }
+
+  if (copied.isEmpty()) {
+    if (outError) {
+      *outError = QObject::tr("No build artifacts were copied.");
+    }
+    return false;
+  }
+
+  if (outCopiedRelativeFiles) {
+    *outCopiedRelativeFiles = copied;
+  }
+  if (outError) {
+    outError->clear();
+  }
+  return true;
+}
+
 bool isGitRepository(const QString& gitPath, const QString& workingDirectory) {
   const CommandResult result = runCommandBlocking(
       gitPath, {QStringLiteral("rev-parse"), QStringLiteral("--is-inside-work-tree")},
@@ -1183,9 +1596,14 @@ constexpr auto kSetupProfileFormat = "rewritto.setup.profile";
 constexpr auto kSetupProfileVersion = 1;
 constexpr auto kProjectLockFormat = "rewritto.lock";
 constexpr auto kProjectLockVersion = 1;
+constexpr auto kProjectBundleFormat = "rewritto.project.bundle";
+constexpr auto kProjectBundleVersion = 1;
+constexpr auto kProjectBundleManifestFile = "rewritto-project-bundle.json";
 
 struct InstalledCoreSnapshot final {
   QString id;
+  QString packager;
+  QString architecture;
   QString installedVersion;
   QString latestVersion;
   QString name;
@@ -1195,7 +1613,15 @@ struct InstalledLibrarySnapshot final {
   QString name;
   QString version;
   QString location;
+  QString installDir;
+  QString sourceDir;
   QStringList providesIncludes;
+};
+
+struct CoreToolDependency final {
+  QString packager;
+  QString name;
+  QString version;
 };
 
 bool commandSucceeded(const CommandResult& result) {
@@ -1273,6 +1699,12 @@ QVector<InstalledCoreSnapshot> parseInstalledCoresFromJson(const QByteArray& jso
     const QJsonObject platform = value.toObject();
     InstalledCoreSnapshot core;
     core.id = platform.value(QStringLiteral("id")).toString().trimmed();
+    const QStringList idParts =
+        core.id.split(QLatin1Char(':'), Qt::SkipEmptyParts);
+    if (idParts.size() >= 2) {
+      core.packager = idParts.at(0).trimmed();
+      core.architecture = idParts.at(1).trimmed();
+    }
     core.installedVersion =
         platform.value(QStringLiteral("installed_version")).toString().trimmed();
     core.latestVersion =
@@ -1321,6 +1753,8 @@ QVector<InstalledLibrarySnapshot> parseInstalledLibrariesFromJson(const QByteArr
     entry.name = lib.value(QStringLiteral("name")).toString().trimmed();
     entry.version = lib.value(QStringLiteral("version")).toString().trimmed();
     entry.location = lib.value(QStringLiteral("location")).toString().trimmed();
+    entry.installDir = lib.value(QStringLiteral("install_dir")).toString().trimmed();
+    entry.sourceDir = lib.value(QStringLiteral("source_dir")).toString().trimmed();
     const QJsonArray includes = lib.value(QStringLiteral("provides_includes")).toArray();
     for (const QJsonValue& includeValue : includes) {
       const QString include = normalizeIncludeToken(includeValue.toString());
@@ -1340,6 +1774,122 @@ QVector<InstalledLibrarySnapshot> parseInstalledLibrariesFromJson(const QByteArr
     return QString::localeAwareCompare(left.name, right.name) < 0;
   });
   return out;
+}
+
+QVector<CoreToolDependency> parseCoreToolDependenciesFromInstalledJson(
+    const QString& installedJsonPath,
+    const QString& packager,
+    const QString& architecture,
+    const QString& version) {
+  QVector<CoreToolDependency> out;
+  QFile file(installedJsonPath);
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    return out;
+  }
+
+  const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+  if (!doc.isObject()) {
+    return out;
+  }
+
+  const QJsonArray packages = doc.object().value(QStringLiteral("packages")).toArray();
+  for (const QJsonValue& packageValue : packages) {
+    if (!packageValue.isObject()) {
+      continue;
+    }
+    const QJsonObject packageObj = packageValue.toObject();
+    const QString packageName =
+        packageObj.value(QStringLiteral("name")).toString().trimmed();
+    if (!packager.isEmpty() && !packageName.isEmpty() &&
+        packageName.compare(packager, Qt::CaseInsensitive) != 0) {
+      continue;
+    }
+
+    const QJsonArray platforms = packageObj.value(QStringLiteral("platforms")).toArray();
+    for (const QJsonValue& platformValue : platforms) {
+      if (!platformValue.isObject()) {
+        continue;
+      }
+      const QJsonObject platformObj = platformValue.toObject();
+      const QString arch =
+          platformObj.value(QStringLiteral("architecture")).toString().trimmed();
+      const QString ver =
+          platformObj.value(QStringLiteral("version")).toString().trimmed();
+      if (!architecture.isEmpty() &&
+          arch.compare(architecture, Qt::CaseInsensitive) != 0) {
+        continue;
+      }
+      if (!version.isEmpty() && ver != version) {
+        continue;
+      }
+
+      const QJsonArray dependencies =
+          platformObj.value(QStringLiteral("toolsDependencies")).toArray();
+      for (const QJsonValue& depValue : dependencies) {
+        if (!depValue.isObject()) {
+          continue;
+        }
+        const QJsonObject depObj = depValue.toObject();
+        CoreToolDependency dep;
+        dep.packager =
+            depObj.value(QStringLiteral("packager")).toString().trimmed();
+        dep.name = depObj.value(QStringLiteral("name")).toString().trimmed();
+        dep.version =
+            depObj.value(QStringLiteral("version")).toString().trimmed();
+        if (!dep.name.isEmpty() && !dep.version.isEmpty()) {
+          out.push_back(dep);
+        }
+      }
+      return out;
+    }
+  }
+
+  return out;
+}
+
+QStringList parseLibraryDependenciesFromProperties(const QString& libraryInstallDir) {
+  if (libraryInstallDir.trimmed().isEmpty()) {
+    return {};
+  }
+  const QString propertiesPath =
+      QDir(libraryInstallDir).absoluteFilePath(QStringLiteral("library.properties"));
+  QFile file(propertiesPath);
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    return {};
+  }
+
+  const QString text = QString::fromUtf8(file.readAll());
+  const QStringList lines = text.split(QLatin1Char('\n'));
+  for (QString line : lines) {
+    line = line.trimmed();
+    if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) {
+      continue;
+    }
+    if (!line.startsWith(QStringLiteral("depends="))) {
+      continue;
+    }
+    line = line.mid(QStringLiteral("depends=").size()).trimmed();
+    if (line.isEmpty()) {
+      return {};
+    }
+
+    QStringList deps;
+    const QStringList parts = line.split(QLatin1Char(','), Qt::SkipEmptyParts);
+    for (QString part : parts) {
+      part = part.trimmed();
+      if (part.isEmpty()) {
+        continue;
+      }
+      part.remove(QRegularExpression(QStringLiteral(R"(\s*\(.*\)\s*)")));
+      part = part.trimmed();
+      if (!part.isEmpty()) {
+        deps << part;
+      }
+    }
+    return normalizeStringList(deps);
+  }
+
+  return {};
 }
 
 QString settingsRootForAuxFiles() {
@@ -1738,6 +2288,305 @@ bool updateArduinoCliConfig(const QString& configPath,
   return true;
 }
 
+QString normalizeDiagnosticPath(QString filePath, int line, const QString& sketchFolder) {
+  filePath = filePath.trimmed();
+  if (filePath.isEmpty() || line <= 0) {
+    return filePath;
+  }
+
+  QFileInfo info(filePath);
+  if (info.isRelative() && !sketchFolder.trimmed().isEmpty()) {
+    filePath = QDir(sketchFolder).absoluteFilePath(filePath);
+    info = QFileInfo(filePath);
+  }
+
+  return info.absoluteFilePath();
+}
+
+bool isIdentifierChar(QChar ch) {
+  return ch.isLetterOrNumber() || ch == QLatin1Char('_');
+}
+
+QString identifierNearColumn(const QString& lineText, int column) {
+  if (lineText.isEmpty()) {
+    return {};
+  }
+
+  int index = column > 0 ? column - 1 : 0;
+  index = qBound(0, index, lineText.size() - 1);
+
+  if (!isIdentifierChar(lineText.at(index))) {
+    int nearest = -1;
+    int nearestDistance = std::numeric_limits<int>::max();
+    for (int i = 0; i < lineText.size(); ++i) {
+      if (!isIdentifierChar(lineText.at(i))) {
+        continue;
+      }
+      const int distance = std::abs(i - index);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = i;
+      }
+    }
+    if (nearest < 0) {
+      return {};
+    }
+    index = nearest;
+  }
+
+  int start = index;
+  while (start > 0 && isIdentifierChar(lineText.at(start - 1))) {
+    --start;
+  }
+  int end = index;
+  while (end + 1 < lineText.size() && isIdentifierChar(lineText.at(end + 1))) {
+    ++end;
+  }
+
+  const QString token = lineText.mid(start, end - start + 1);
+  if (token.isEmpty()) {
+    return {};
+  }
+
+  static const QSet<QString> kKeywords = {
+      QStringLiteral("if"),        QStringLiteral("else"),
+      QStringLiteral("for"),       QStringLiteral("while"),
+      QStringLiteral("switch"),    QStringLiteral("case"),
+      QStringLiteral("return"),    QStringLiteral("class"),
+      QStringLiteral("struct"),    QStringLiteral("enum"),
+      QStringLiteral("namespace"), QStringLiteral("template"),
+      QStringLiteral("typename"),  QStringLiteral("void"),
+      QStringLiteral("int"),       QStringLiteral("long"),
+      QStringLiteral("short"),     QStringLiteral("float"),
+      QStringLiteral("double"),    QStringLiteral("char"),
+      QStringLiteral("bool"),      QStringLiteral("const"),
+      QStringLiteral("static"),    QStringLiteral("volatile"),
+      QStringLiteral("unsigned"),  QStringLiteral("signed"),
+      QStringLiteral("auto"),      QStringLiteral("new"),
+      QStringLiteral("delete"),
+  };
+
+  if (kKeywords.contains(token)) {
+    return {};
+  }
+  return token;
+}
+
+int declarationInsertPosition(QTextDocument* doc) {
+  if (!doc) {
+    return 0;
+  }
+
+  int insertPos = 0;
+  QTextBlock block = doc->begin();
+  while (block.isValid()) {
+    const QString trimmed = block.text().trimmed();
+    if (trimmed.isEmpty() ||
+        trimmed.startsWith(QStringLiteral("//")) ||
+        trimmed.startsWith(QStringLiteral("/*")) ||
+        trimmed.startsWith(QStringLiteral("*")) ||
+        trimmed.startsWith(QStringLiteral("*/")) ||
+        trimmed.startsWith(QStringLiteral("#include")) ||
+        trimmed.startsWith(QStringLiteral("#pragma once"))) {
+      insertPos = block.position() + block.length();
+      block = block.next();
+      continue;
+    }
+    break;
+  }
+
+  return qBound(0, insertPos, std::max(0, doc->characterCount() - 1));
+}
+
+QString includeGuardSymbolFromPath(const QString& filePath) {
+  QString base = QFileInfo(filePath).fileName().trimmed();
+  if (base.isEmpty()) {
+    base = QStringLiteral("HEADER");
+  }
+  QString symbol = base.toUpper();
+  for (QChar& ch : symbol) {
+    if (!ch.isLetterOrNumber()) {
+      ch = QLatin1Char('_');
+    }
+  }
+  while (symbol.contains(QStringLiteral("__"))) {
+    symbol.replace(QStringLiteral("__"), QStringLiteral("_"));
+  }
+  if (symbol.startsWith(QLatin1Char('_'))) {
+    symbol.remove(0, 1);
+  }
+  if (symbol.endsWith(QLatin1Char('_'))) {
+    symbol.chop(1);
+  }
+  if (!symbol.endsWith(QStringLiteral("_H")) &&
+      !symbol.endsWith(QStringLiteral("_HPP"))) {
+    symbol += QStringLiteral("_H");
+  }
+  return QStringLiteral("REWRITTO_%1").arg(symbol);
+}
+
+QString pathFromUriOrPath(QString uriOrPath) {
+  uriOrPath = uriOrPath.trimmed();
+  if (uriOrPath.isEmpty()) {
+    return {};
+  }
+
+  const QUrl url(uriOrPath);
+  if (url.isValid() && url.isLocalFile()) {
+    return QFileInfo(url.toLocalFile()).absoluteFilePath();
+  }
+  return QFileInfo(uriOrPath).absoluteFilePath();
+}
+
+QString languageIdForFilePath(const QString& filePath) {
+  const QString ext = QFileInfo(filePath).suffix().trimmed().toLower();
+  if (ext == QStringLiteral("ino") || ext == QStringLiteral("pde") ||
+      ext == QStringLiteral("c") || ext == QStringLiteral("cc") ||
+      ext == QStringLiteral("cpp") || ext == QStringLiteral("cxx") ||
+      ext == QStringLiteral("h") || ext == QStringLiteral("hh") ||
+      ext == QStringLiteral("hpp") || ext == QStringLiteral("hxx")) {
+    return QStringLiteral("cpp");
+  }
+  return QStringLiteral("plaintext");
+}
+
+QString severityLabelForLspSeverity(int severity) {
+  switch (severity) {
+    case 1:
+      return QStringLiteral("error");
+    case 2:
+      return QStringLiteral("warning");
+    case 4:
+      return QStringLiteral("hint");
+    case 3:
+    default:
+      return QStringLiteral("info");
+  }
+}
+
+QVector<CodeEditor::Diagnostic> editorDiagnosticsFromLsp(const QJsonArray& diagnostics) {
+  QVector<CodeEditor::Diagnostic> out;
+  out.reserve(diagnostics.size());
+  for (const QJsonValue& value : diagnostics) {
+    if (!value.isObject()) {
+      continue;
+    }
+    const QJsonObject obj = value.toObject();
+    const QJsonObject range = obj.value(QStringLiteral("range")).toObject();
+    const QJsonObject start = range.value(QStringLiteral("start")).toObject();
+    const QJsonObject end = range.value(QStringLiteral("end")).toObject();
+
+    CodeEditor::Diagnostic d;
+    d.startLine = qMax(0, start.value(QStringLiteral("line")).toInt());
+    d.startCharacter = qMax(0, start.value(QStringLiteral("character")).toInt());
+    d.endLine = qMax(d.startLine, end.value(QStringLiteral("line")).toInt());
+    d.endCharacter = qMax(
+        d.startCharacter + 1, end.value(QStringLiteral("character")).toInt());
+    d.severity = qBound(1, obj.value(QStringLiteral("severity")).toInt(3), 4);
+    out.push_back(d);
+  }
+  return out;
+}
+
+QVector<ProblemsWidget::Diagnostic> problemsDiagnosticsFromLsp(
+    const QString& filePath,
+    const QJsonArray& diagnostics) {
+  QVector<ProblemsWidget::Diagnostic> out;
+  out.reserve(diagnostics.size());
+  for (const QJsonValue& value : diagnostics) {
+    if (!value.isObject()) {
+      continue;
+    }
+    const QJsonObject obj = value.toObject();
+    const QJsonObject range = obj.value(QStringLiteral("range")).toObject();
+    const QJsonObject start = range.value(QStringLiteral("start")).toObject();
+
+    ProblemsWidget::Diagnostic d;
+    d.filePath = filePath;
+    d.line = qMax(0, start.value(QStringLiteral("line")).toInt() + 1);
+    d.column = qMax(0, start.value(QStringLiteral("character")).toInt() + 1);
+    d.severity =
+        severityLabelForLspSeverity(obj.value(QStringLiteral("severity")).toInt(3));
+    d.message = obj.value(QStringLiteral("message")).toString().trimmed();
+    out.push_back(d);
+  }
+  return out;
+}
+
+QString hoverContentsToText(const QJsonValue& contentsValue) {
+  auto stripMarkdown = [](QString text) {
+    text.replace(QRegularExpression(QStringLiteral("```[\\s\\S]*?```")),
+                 QStringLiteral(" "));
+    text.replace(QRegularExpression(QStringLiteral("`([^`]+)`")),
+                 QStringLiteral("\\1"));
+    text.replace(QRegularExpression(QStringLiteral("\\*\\*([^*]+)\\*\\*")),
+                 QStringLiteral("\\1"));
+    text.replace(QRegularExpression(QStringLiteral("\\*([^*]+)\\*")),
+                 QStringLiteral("\\1"));
+    return text.simplified();
+  };
+
+  if (contentsValue.isString()) {
+    return stripMarkdown(contentsValue.toString());
+  }
+  if (contentsValue.isArray()) {
+    QStringList parts;
+    const QJsonArray arr = contentsValue.toArray();
+    for (const QJsonValue& v : arr) {
+      const QString piece = hoverContentsToText(v).trimmed();
+      if (!piece.isEmpty()) {
+        parts << piece;
+      }
+    }
+    return parts.join(QStringLiteral("\n"));
+  }
+  if (contentsValue.isObject()) {
+    const QJsonObject obj = contentsValue.toObject();
+    if (obj.contains(QStringLiteral("value"))) {
+      return stripMarkdown(obj.value(QStringLiteral("value")).toString());
+    }
+    if (obj.contains(QStringLiteral("language")) ||
+        obj.contains(QStringLiteral("kind"))) {
+      return stripMarkdown(obj.value(QStringLiteral("value")).toString());
+    }
+  }
+  return {};
+}
+
+bool lspRangeToDocumentOffsets(QTextDocument* doc,
+                               const QJsonObject& rangeObj,
+                               int* outStart,
+                               int* outEnd) {
+  if (!doc || !outStart || !outEnd) {
+    return false;
+  }
+  const QJsonObject startObj = rangeObj.value(QStringLiteral("start")).toObject();
+  const QJsonObject endObj = rangeObj.value(QStringLiteral("end")).toObject();
+  if (startObj.isEmpty() || endObj.isEmpty()) {
+    return false;
+  }
+
+  auto positionFor = [doc](const QJsonObject& posObj) {
+    const int line = qMax(0, posObj.value(QStringLiteral("line")).toInt());
+    const int character = qMax(0, posObj.value(QStringLiteral("character")).toInt());
+    QTextBlock block = doc->findBlockByNumber(line);
+    if (!block.isValid()) {
+      return qMax(0, doc->characterCount() - 1);
+    }
+    const int offsetInLine = qBound(0, character, block.text().size());
+    return block.position() + offsetInLine;
+  };
+
+  int start = positionFor(startObj);
+  int end = positionFor(endObj);
+  if (end < start) {
+    std::swap(start, end);
+  }
+  *outStart = start;
+  *outEnd = end;
+  return true;
+}
+
 }  // namespace
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
@@ -2011,6 +2860,9 @@ void MainWindow::createActions() {
   actionSaveAll_ = new QAction(tr("Save All"), this);
   actionSaveAll_->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S));
 
+  actionExportProjectZip_ = new QAction(tr("Export Project ZIP\u2026"), this);
+  actionImportProjectZip_ = new QAction(tr("Import Project ZIP\u2026"), this);
+
   actionExamples_ = new QAction(tr("Examples\u2026"), this);
 
   actionPreferences_ = new QAction(tr("Preferences\u2026"), this);
@@ -2081,6 +2933,29 @@ void MainWindow::createActions() {
 
   actionGoToSymbol_ = new QAction(tr("Go to Symbol\u2026"), this);
   actionGoToSymbol_->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
+
+  actionCompletion_ = new QAction(tr("Trigger Completion"), this);
+  actionCompletion_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Space));
+
+  actionShowHover_ = new QAction(tr("Show Hover"), this);
+
+  actionGoToDefinition_ = new QAction(tr("Go to Definition"), this);
+  actionGoToDefinition_->setShortcut(QKeySequence(Qt::Key_F12));
+
+  actionFindReferences_ = new QAction(tr("Find References"), this);
+  actionFindReferences_->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F12));
+
+  actionRenameSymbol_ = new QAction(tr("Rename Symbol"), this);
+  actionRenameSymbol_->setShortcut(QKeySequence(Qt::Key_F2));
+
+  actionCodeActions_ = new QAction(tr("Code Actions"), this);
+  actionCodeActions_->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Return));
+
+  actionOrganizeImports_ = new QAction(tr("Organize Imports"), this);
+
+  actionFormatDocument_ = new QAction(tr("Format Document"), this);
+  actionFormatDocument_->setShortcut(
+      QKeySequence(Qt::SHIFT | Qt::ALT | Qt::Key_F));
 
   actionVerify_ = new QAction(tr("Verify"), this);
   actionVerify_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
@@ -2283,6 +3158,9 @@ void MainWindow::createMenus() {
   fileMenu->addAction(actionSaveCopyAs_);
   fileMenu->addAction(actionSaveAll_);
   fileMenu->addSeparator();
+  fileMenu->addAction(actionExportProjectZip_);
+  fileMenu->addAction(actionImportProjectZip_);
+  fileMenu->addSeparator();
   fileMenu->addAction(actionPreferences_);
   fileMenu->addSeparator();
   fileMenu->addAction(actionQuit_);
@@ -2313,6 +3191,17 @@ void MainWindow::createMenus() {
   QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
   viewMenu->addAction(actionGoToLine_);
   viewMenu->addAction(actionGoToSymbol_);
+  viewMenu->addSeparator();
+  QMenu* codeIntelligenceMenu = viewMenu->addMenu(tr("Code Intelligence"));
+  codeIntelligenceMenu->addAction(actionCompletion_);
+  codeIntelligenceMenu->addAction(actionShowHover_);
+  codeIntelligenceMenu->addAction(actionGoToDefinition_);
+  codeIntelligenceMenu->addAction(actionFindReferences_);
+  codeIntelligenceMenu->addAction(actionRenameSymbol_);
+  codeIntelligenceMenu->addSeparator();
+  codeIntelligenceMenu->addAction(actionCodeActions_);
+  codeIntelligenceMenu->addAction(actionOrganizeImports_);
+  codeIntelligenceMenu->addAction(actionFormatDocument_);
   viewMenu->addSeparator();
   viewMenu->addAction(actionSidebarSearch_);
   viewMenu->addSeparator();
@@ -2693,6 +3582,14 @@ void MainWindow::createMenus() {
     }
   });
 
+  connect(actionExportProjectZip_, &QAction::triggered, this, [this] {
+    exportProjectZip();
+  });
+
+  connect(actionImportProjectZip_, &QAction::triggered, this, [this] {
+    importProjectZip();
+  });
+
   connect(actionQuit_, &QAction::triggered, this, [this] {
     close();
   });
@@ -2844,6 +3741,24 @@ void MainWindow::createMenus() {
     showGoToSymbol();
   });
 
+  connect(actionCompletion_, &QAction::triggered, this,
+          [this] { requestCompletion(); });
+  connect(actionShowHover_, &QAction::triggered, this,
+          [this] { showHover(); });
+  connect(actionGoToDefinition_, &QAction::triggered, this,
+          [this] { goToDefinition(); });
+  connect(actionFindReferences_, &QAction::triggered, this,
+          [this] { findReferences(); });
+  connect(actionRenameSymbol_, &QAction::triggered, this,
+          [this] { renameSymbol(); });
+  connect(actionCodeActions_, &QAction::triggered, this,
+          [this] { showCodeActions(); });
+  connect(actionOrganizeImports_, &QAction::triggered, this, [this] {
+    showCodeActions({QStringLiteral("source.organizeImports")});
+  });
+  connect(actionFormatDocument_, &QAction::triggered, this,
+          [this] { formatDocument(); });
+
   connect(actionCommandPalette_, &QAction::triggered, this, [this] {
     showCommandPalette();
   });
@@ -2936,7 +3851,7 @@ void MainWindow::createMenus() {
   });
 
   connect(actionRefreshBoards_, &QAction::triggered, this, [this] {
-    refreshInstalledBoards();
+    scheduleBoardListRefresh();
     showToast(tr("Boards list refreshed"));
   });
 
@@ -3144,8 +4059,9 @@ void MainWindow::createLayout() {
             storeFqbnForCurrentSketch(fqbn);
 
             updateBoardPortIndicator();
-            refreshBoardOptions();
+            scheduleRefreshBoardOptions();
             updateUploadActionStates();
+            scheduleRestartLanguageServer();
           });
 
   // Connect port combo selection changes
@@ -3625,6 +4541,118 @@ void MainWindow::wireSignals() {
   tabifyDockWidget(outputDock_, problemsDock_);
   problemsDock_->raise();
 
+  connect(problems_, &ProblemsWidget::openLocationRequested, this,
+          [this](const QString& filePath, int line, int column) {
+            if (!editor_ || filePath.trimmed().isEmpty() || line <= 0) {
+              return;
+            }
+            if (!editor_->openLocation(filePath, line, column)) {
+              showToast(tr("Could not open diagnostic location."));
+            }
+          });
+  connect(problems_, &ProblemsWidget::searchBoardsRequested, this,
+          [this](const QString& query) { focusBoardsManagerSearch(query); });
+  connect(problems_, &ProblemsWidget::searchLibrariesRequested, this,
+          [this](const QString& query) { focusLibraryManagerSearch(query); });
+  connect(problems_, &ProblemsWidget::quickFixRequested, this,
+          &MainWindow::handleQuickFix);
+  connect(problems_, &ProblemsWidget::showDocsRequested, this,
+          [this](const QString& message) {
+            QString query = message.simplified();
+            if (query.isEmpty()) {
+              return;
+            }
+            if (query.size() > 220) {
+              query = query.left(220);
+            }
+            const QString encoded = QString::fromLatin1(
+                QUrl::toPercentEncoding(QStringLiteral("arduino %1").arg(query)));
+            QDesktopServices::openUrl(
+                QUrl(QStringLiteral("https://duckduckgo.com/?q=%1").arg(encoded)));
+          });
+
+  auto applyMergedEditorDiagnostics = [this](const QString& filePath) {
+    if (!editor_) {
+      return;
+    }
+    const QString normalized = QFileInfo(filePath).absoluteFilePath();
+    QVector<CodeEditor::Diagnostic> merged =
+        compilerDiagnostics_.value(normalized);
+    const QJsonArray lspDiags = lspDiagnosticsByFilePath_.value(normalized);
+    const QVector<CodeEditor::Diagnostic> lspEditorDiags =
+        editorDiagnosticsFromLsp(lspDiags);
+    for (const CodeEditor::Diagnostic& d : lspEditorDiags) {
+      merged.push_back(d);
+    }
+    editor_->setDiagnostics(normalized, merged);
+  };
+
+  if (lsp_) {
+    connect(lsp_, &LspClient::logMessage, this, [this](const QString& message) {
+      if (!output_) {
+        return;
+      }
+      const QString trimmed = message.trimmed();
+      if (trimmed.isEmpty()) {
+        return;
+      }
+      output_->appendLine(tr("[LSP] %1").arg(trimmed));
+    });
+
+    connect(lsp_, &LspClient::readyChanged, this, [this](bool ready) {
+      if (!ready) {
+        if (editor_) {
+          editor_->clearAllDiagnostics();
+          for (auto it = compilerDiagnostics_.cbegin();
+               it != compilerDiagnostics_.cend(); ++it) {
+            editor_->setDiagnostics(it.key(), it.value());
+          }
+        }
+        lspDiagnosticsByFilePath_.clear();
+        if (problems_) {
+          problems_->clearSource(QStringLiteral("LSP"));
+        }
+        return;
+      }
+
+      if (!editor_) {
+        return;
+      }
+      const QVector<QString> files = editor_->openedFiles();
+      for (const QString& filePath : files) {
+        if (filePath.trimmed().isEmpty()) {
+          continue;
+        }
+        lsp_->didOpen(toFileUri(filePath),
+                      languageIdForFilePath(filePath),
+                      editor_->textForFile(filePath));
+      }
+      scheduleOutlineRefresh();
+    });
+
+    connect(lsp_, &LspClient::publishDiagnostics, this,
+            [this, applyMergedEditorDiagnostics](const QString& uri,
+                                                 const QJsonArray& diagnostics) {
+              const QString filePath = pathFromUriOrPath(uri);
+              if (filePath.trimmed().isEmpty()) {
+                return;
+              }
+              const QString normalized = QFileInfo(filePath).absoluteFilePath();
+              if (diagnostics.isEmpty()) {
+                lspDiagnosticsByFilePath_.remove(normalized);
+              } else {
+                lspDiagnosticsByFilePath_[normalized] = diagnostics;
+              }
+              applyMergedEditorDiagnostics(normalized);
+
+              if (problems_) {
+                const QVector<ProblemsWidget::Diagnostic> lspProblems =
+                    problemsDiagnosticsFromLsp(normalized, diagnostics);
+                problems_->setDiagnostics(QStringLiteral("LSP"), normalized, lspProblems);
+              }
+            });
+  }
+
   debugDock_ = new QDockWidget(tr("Debug"), this);
   debugDock_->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
   debugDock_->setObjectName("DebugDock");
@@ -3798,12 +4826,22 @@ void MainWindow::wireSignals() {
     compilerDiagnostics_.clear();
     if (editor_) {
       editor_->clearAllDiagnostics();
+      for (auto it = lspDiagnosticsByFilePath_.cbegin();
+           it != lspDiagnosticsByFilePath_.cend(); ++it) {
+        const QVector<CodeEditor::Diagnostic> lspOnly =
+            editorDiagnosticsFromLsp(it.value());
+        editor_->setDiagnostics(it.key(), lspOnly);
+      }
+    }
+    if (problems_) {
+      problems_->clearSource(QStringLiteral("Compiler"));
     }
   });
   connect(arduinoCli_, &ArduinoCli::diagnosticFound, this,
-          [this](const QString& filePath, int line, int column,
-                 const QString& severity, const QString& message) {
-            Q_UNUSED(message);
+          [this, applyMergedEditorDiagnostics](const QString& filePath, int line, int column,
+                                               const QString& severity, const QString& message) {
+            const QString normalizedFilePath = normalizeDiagnosticPath(
+                filePath, line, currentSketchFolderPath());
             CodeEditor::Diagnostic d;
             d.startLine = qMax(0, line - 1);
             d.startCharacter = qMax(0, column - 1);
@@ -3818,9 +4856,29 @@ void MainWindow::wireSignals() {
               d.severity = 3;
             }
 
-            compilerDiagnostics_[filePath].push_back(d);
-            if (editor_) {
-              editor_->setDiagnostics(filePath, compilerDiagnostics_[filePath]);
+            if (line > 0 && !normalizedFilePath.trimmed().isEmpty()) {
+              compilerDiagnostics_[normalizedFilePath].push_back(d);
+            }
+            if (editor_ && line > 0 && !normalizedFilePath.trimmed().isEmpty()) {
+              applyMergedEditorDiagnostics(normalizedFilePath);
+            }
+
+            if (problems_) {
+              ProblemsWidget::Diagnostic pd;
+              pd.filePath = normalizedFilePath;
+              pd.line = qMax(0, line);
+              pd.column = qMax(0, column);
+              pd.severity = severity;
+              pd.message = message;
+              problems_->addDiagnostic(QStringLiteral("Compiler"), pd);
+            }
+
+            if (problemsDock_ &&
+                !problemsDock_->isVisible() &&
+                severity.trimmed().compare(QStringLiteral("error"),
+                                           Qt::CaseInsensitive) == 0) {
+              problemsDock_->show();
+              problemsDock_->raise();
             }
           });
   connect(arduinoCli_, &ArduinoCli::finished, this,
@@ -4028,10 +5086,11 @@ void MainWindow::wireSignals() {
     updateWindowTitleForFile(path);
     updateBoardPortIndicator();
     updateUploadActionStates();
+    scheduleOutlineRefresh();
   });
 
   connect(editor_, &EditorWidget::documentOpened, this,
-          [this](const QString& path, const QString&) {
+          [this](const QString& path, const QString& text) {
             const QString folder = normalizeSketchFolderPath(path);
             if (folder.isEmpty()) {
               return;
@@ -4048,18 +5107,39 @@ void MainWindow::wireSignals() {
               fileTree_->expand(root);
             }
             updateUploadActionStates();
+            scheduleOutlineRefresh();
+            scheduleRestartLanguageServer();
+            if (lsp_ && lsp_->isReady()) {
+              lsp_->didOpen(toFileUri(path), languageIdForFilePath(path), text);
+            }
           });
 
   connect(editor_, &EditorWidget::documentChanged, this,
-          [this](const QString& path, const QString&) {
+          [this](const QString& path, const QString& text) {
             markSketchAsChanged(path);
             updateUploadActionStates();
+            scheduleOutlineRefresh();
+            if (lsp_ && lsp_->isReady() && !path.trimmed().isEmpty()) {
+              lsp_->didChange(toFileUri(path), text);
+            }
           });
 
   connect(editor_, &EditorWidget::documentClosed, this, [this](const QString& path) {
-    Q_UNUSED(path);
-    // Document closed - could trigger re-analysis
     updateUploadActionStates();
+    scheduleOutlineRefresh();
+    if (!path.trimmed().isEmpty()) {
+      const QString normalized = QFileInfo(path).absoluteFilePath();
+      lspDiagnosticsByFilePath_.remove(normalized);
+      if (problems_) {
+        problems_->setDiagnostics(QStringLiteral("LSP"), normalized, {});
+      }
+      if (editor_) {
+        editor_->setDiagnostics(normalized, compilerDiagnostics_.value(normalized));
+      }
+    }
+    if (lsp_ && lsp_->isReady() && !path.trimmed().isEmpty()) {
+      lsp_->didClose(toFileUri(path));
+    }
   });
 
   connect(editor_, &EditorWidget::breakpointsChanged, this,
@@ -4068,6 +5148,9 @@ void MainWindow::wireSignals() {
     Q_UNUSED(lines);
     // Breakpoints changed - sync with debugger if needed
   });
+
+  scheduleRestartLanguageServer();
+  scheduleOutlineRefresh();
 }
 
 void MainWindow::processOutputChunk(const QString& chunk) {
@@ -4181,6 +5264,10 @@ void MainWindow::toggleFavorite(const QString& fqbn) {
 
 bool MainWindow::isFavorite(const QString& fqbn) const {
   return favoriteFqbns_.contains(fqbn);
+}
+
+void MainWindow::scheduleBoardListRefresh() {
+  QTimer::singleShot(120, this, [this] { refreshInstalledBoards(); });
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
@@ -5142,6 +6229,15 @@ void MainWindow::maybeAutoSelectBoardForCurrentPort() {
   settings.endGroup();
   storeFqbnForCurrentSketch(detected);
 }
+
+void MainWindow::scheduleRefreshBoardOptions() {
+  if (boardOptionsRefreshTimer_) {
+    boardOptionsRefreshTimer_->start();
+    return;
+  }
+  QTimer::singleShot(0, this, [this] { refreshBoardOptions(); });
+}
+
 void MainWindow::refreshBoardOptions() {
   clearBoardOptionMenus();
   
@@ -5985,6 +7081,13 @@ void MainWindow::updateStopActionState() {
   }
   updateUploadActionStates();
 }
+
+void MainWindow::scheduleOutlineRefresh() {
+  if (outlineRefreshTimer_) {
+    outlineRefreshTimer_->start();
+  }
+}
+
 void MainWindow::refreshOutline() {
   if (!lsp_ || !lsp_->isReady() || !editor_) return;
   const QString path = editor_->currentFilePath();
@@ -6000,10 +7103,114 @@ void MainWindow::refreshOutline() {
       }
     });
 }
+
+void MainWindow::scheduleRestartLanguageServer() {
+  if (lspRestartTimer_) {
+    lspRestartTimer_->start();
+  }
+}
+
 void MainWindow::restartLanguageServer() {
   stopLanguageServer();
-  if (lsp_ && !arduinoCli_->isRunning()) {
-    lsp_->start(arduinoCli_->arduinoCliPath(), {"daemon", "--format", "json"}, arduinoCli_->arduinoCliConfigPath());
+  if (!lsp_ || !arduinoCli_ || arduinoCli_->isRunning()) {
+    return;
+  }
+
+  const QString sketchFolder = currentSketchFolderPath();
+  if (sketchFolder.trimmed().isEmpty()) {
+    return;
+  }
+
+  auto resolveExecutable = [this](const QStringList& names) {
+    const QString appDir = QCoreApplication::applicationDirPath();
+    for (const QString& name : names) {
+      const QString trimmed = name.trimmed();
+      if (trimmed.isEmpty()) {
+        continue;
+      }
+
+      QFileInfo direct(trimmed);
+      if (direct.isFile() && direct.isExecutable()) {
+        return direct.absoluteFilePath();
+      }
+
+      const QString fromPath = findExecutable(trimmed);
+      if (!fromPath.isEmpty()) {
+        return fromPath;
+      }
+
+      const QString bundled = QDir(appDir).absoluteFilePath(trimmed);
+      QFileInfo bundledInfo(bundled);
+      if (bundledInfo.isFile() && bundledInfo.isExecutable()) {
+        return bundledInfo.absoluteFilePath();
+      }
+    }
+    return QString{};
+  };
+
+  QString cliPath = arduinoCli_->arduinoCliPath().trimmed();
+  if (!cliPath.isEmpty() && QDir::isRelativePath(cliPath)) {
+    const QString resolved = findExecutable(cliPath);
+    if (!resolved.isEmpty()) {
+      cliPath = resolved;
+    }
+  }
+  const QString cliConfig = arduinoCli_->arduinoCliConfigPath().trimmed();
+  const QString fqbn = currentFqbn().trimmed();
+  const QString rootUri = toFileUri(sketchFolder);
+
+  const QString alsPath =
+      resolveExecutable({QStringLiteral("arduino-language-server")});
+  const QString clangdPath = resolveExecutable(
+      {QStringLiteral("clangd"), QStringLiteral("clangd-18"),
+       QStringLiteral("clangd-17"), QStringLiteral("clangd-16")});
+
+  if (!alsPath.isEmpty() &&
+      !clangdPath.isEmpty() &&
+      !cliPath.isEmpty() &&
+      !fqbn.isEmpty()) {
+    QStringList args = {
+        QStringLiteral("-clangd"),
+        clangdPath,
+        QStringLiteral("-cli"),
+        cliPath,
+        QStringLiteral("-fqbn"),
+        fqbn,
+    };
+    if (!cliConfig.isEmpty()) {
+      args << QStringLiteral("-cli-config") << cliConfig;
+    }
+    lsp_->start(alsPath, args, rootUri);
+    if (output_) {
+      output_->appendLine(tr("[LSP] Starting arduino-language-server (%1)")
+                              .arg(fqbn));
+    }
+    lspUnavailableNoticeShown_ = false;
+    return;
+  }
+
+  if (!clangdPath.isEmpty()) {
+    const QStringList args = {
+        QStringLiteral("--background-index"),
+        QStringLiteral("--header-insertion=never"),
+        QStringLiteral("--completion-style=detailed"),
+    };
+    lsp_->start(clangdPath, args, rootUri);
+    if (output_) {
+      output_->appendLine(tr("[LSP] Starting clangd fallback."));
+    }
+    lspUnavailableNoticeShown_ = false;
+    return;
+  }
+
+  if (!lspUnavailableNoticeShown_) {
+    lspUnavailableNoticeShown_ = true;
+    if (output_) {
+      output_->appendLine(
+          tr("[LSP] No supported language server executable found. "
+             "Install `clangd` or `arduino-language-server` to enable code intelligence."));
+    }
+    showToast(tr("Code intelligence disabled: no language server found."));
   }
 }
 
@@ -6184,6 +7391,8 @@ bool MainWindow::openSketchFolderInUi(const QString& folder) {
     actionPinSketch_->setChecked(isSketchPinned(sketchFolder));
   }
 
+  scheduleRestartLanguageServer();
+  scheduleOutlineRefresh();
   updateUploadActionStates();
   updateWelcomeVisibility();
   return true;
@@ -6796,6 +8005,948 @@ void MainWindow::openSketchFolder() {
   (void)openSketchFolderInUi(dir);
 }
 
+void MainWindow::exportProjectZip() {
+  const QString sketchFolder = currentSketchFolderPath().trimmed();
+  if (sketchFolder.isEmpty()) {
+    QMessageBox::warning(this, tr("Export Project ZIP"),
+                         tr("Please open or create a sketch first."));
+    return;
+  }
+
+  if (arduinoCli_ && arduinoCli_->isRunning()) {
+    QMessageBox::information(
+        this, tr("Export Project ZIP"),
+        tr("Please wait for the current Arduino CLI operation to finish."));
+    return;
+  }
+
+  if (editor_) {
+    editor_->saveAll();
+  }
+
+  const QString sketchName = QFileInfo(sketchFolder).fileName().trimmed().isEmpty()
+                                 ? QStringLiteral("sketch")
+                                 : QFileInfo(sketchFolder).fileName().trimmed();
+  const QString defaultZipPath = QDir(QDir::homePath())
+                                     .absoluteFilePath(
+                                         QStringLiteral("%1-project-%2.zip")
+                                             .arg(sketchName,
+                                                  QDateTime::currentDateTime().toString(
+                                                      QStringLiteral("yyyyMMdd-HHmmss"))));
+  const QString zipPath = QFileDialog::getSaveFileName(
+      this,
+      tr("Export Project ZIP"),
+      defaultZipPath,
+      tr("ZIP Files (*.zip);;All Files (*)"));
+  if (zipPath.trimmed().isEmpty()) {
+    return;
+  }
+
+  QProgressDialog progress(tr("Exporting project bundle..."), QString(), 0, 100,
+                           this);
+  progress.setWindowModality(Qt::ApplicationModal);
+  progress.setCancelButton(nullptr);
+  progress.setMinimumDuration(0);
+  progress.setAutoClose(false);
+  progress.setAutoReset(false);
+  auto setProgress = [&progress](int value, const QString& text) {
+    progress.setValue(qBound(0, value, 100));
+    progress.setLabelText(text);
+    QCoreApplication::processEvents();
+  };
+  setProgress(2, tr("Preparing staging folder..."));
+
+  QTemporaryDir stagingDir;
+  if (!stagingDir.isValid()) {
+    QMessageBox::warning(this, tr("Export Project ZIP"),
+                         tr("Could not create a temporary staging folder."));
+    return;
+  }
+
+  const QString bundleRoot =
+      QDir(stagingDir.path()).absoluteFilePath(QStringLiteral("rewritto-project-bundle"));
+  if (!QDir().mkpath(bundleRoot)) {
+    QMessageBox::warning(this, tr("Export Project ZIP"),
+                         tr("Could not create bundle staging folder."));
+    return;
+  }
+
+  QString copyError;
+  const QString sketchBundlePath =
+      QDir(bundleRoot).absoluteFilePath(QStringLiteral("sketch"));
+  setProgress(8, tr("Copying sketch files..."));
+  if (!copyDirectoryRecursivelyMerged(sketchFolder, sketchBundlePath, &copyError)) {
+    QMessageBox::warning(this, tr("Export Project ZIP"),
+                         tr("Could not copy sketch files.\n\n%1").arg(copyError));
+    return;
+  }
+
+  QStringList notes;
+  auto appendNote = [&notes](const QString& text) {
+    const QString trimmed = text.trimmed();
+    if (!trimmed.isEmpty()) {
+      notes << trimmed;
+    }
+  };
+
+  QStringList additionalUrls;
+  QString sketchbookDir;
+  {
+    QSettings settings;
+    settings.beginGroup(QStringLiteral("Preferences"));
+    additionalUrls = settings.value(QStringLiteral("additionalUrls")).toStringList();
+    sketchbookDir = settings.value(QStringLiteral("sketchbookDir")).toString().trimmed();
+    settings.endGroup();
+  }
+  const ArduinoCliConfigSnapshot configSnapshot = readArduinoCliConfigSnapshot(
+      arduinoCli_ ? arduinoCli_->arduinoCliConfigPath() : QString{});
+  if (additionalUrls.isEmpty()) {
+    additionalUrls = configSnapshot.additionalUrls;
+  }
+  additionalUrls = normalizeStringList(additionalUrls);
+  if (sketchbookDir.isEmpty()) {
+    sketchbookDir = configSnapshot.userDir.trimmed();
+  }
+  if (sketchbookDir.isEmpty()) {
+    sketchbookDir = defaultSketchbookDir();
+  }
+
+  QString arduinoDataDir = defaultArduinoDataDirPath();
+  QStringList bundledCorePackages;
+  QVector<InstalledCoreSnapshot> installedCores;
+  QVector<InstalledLibrarySnapshot> installedLibraries;
+
+  const QString cliPath =
+      arduinoCli_ ? arduinoCli_->arduinoCliPath().trimmed() : QString{};
+  setProgress(18, tr("Reading installed cores and libraries..."));
+  if (!cliPath.isEmpty() && arduinoCli_) {
+    const ArduinoCliDirectories dirs =
+        readArduinoCliDirectories(cliPath, arduinoCli_->withGlobalFlags({}));
+    if (!dirs.dataDir.trimmed().isEmpty()) {
+      arduinoDataDir = dirs.dataDir.trimmed();
+    }
+    if (sketchbookDir.trimmed().isEmpty() && !dirs.userDir.trimmed().isEmpty()) {
+      sketchbookDir = dirs.userDir.trimmed();
+    }
+
+    const CommandResult coreListResult = runCommandBlocking(
+        cliPath,
+        arduinoCli_->withGlobalFlags({QStringLiteral("core"),
+                                      QStringLiteral("list"),
+                                      QStringLiteral("--json")}),
+        {}, {}, 120000);
+    if (commandSucceeded(coreListResult)) {
+      installedCores = parseInstalledCoresFromJson(coreListResult.stdoutText.toUtf8());
+    } else {
+      appendNote(
+          tr("Could not read installed cores: %1")
+              .arg(commandErrorSummary(coreListResult)));
+    }
+
+    const CommandResult libListResult = runCommandBlocking(
+        cliPath,
+        arduinoCli_->withGlobalFlags({QStringLiteral("lib"),
+                                      QStringLiteral("list"),
+                                      QStringLiteral("--json")}),
+        {}, {}, 120000);
+    if (commandSucceeded(libListResult)) {
+      installedLibraries =
+          parseInstalledLibrariesFromJson(libListResult.stdoutText.toUtf8());
+    } else {
+      appendNote(
+          tr("Could not read installed libraries: %1")
+              .arg(commandErrorSummary(libListResult)));
+    }
+  } else {
+    appendNote(tr("Arduino CLI is unavailable; exporting sketch files only."));
+  }
+
+  const QString fqbn = currentFqbn().trimmed();
+  const QStringList fqbnParts = fqbn.split(QLatin1Char(':'), Qt::SkipEmptyParts);
+  const QString selectedCoreId =
+      fqbnParts.size() >= 2
+          ? QStringLiteral("%1:%2")
+                .arg(fqbnParts.at(0).trimmed(), fqbnParts.at(1).trimmed())
+          : QString{};
+  QString selectedPackager;
+  QString selectedArchitecture;
+  if (fqbnParts.size() >= 2) {
+    selectedPackager = fqbnParts.at(0).trimmed();
+    selectedArchitecture = fqbnParts.at(1).trimmed();
+  }
+
+  InstalledCoreSnapshot selectedCore;
+  bool selectedCoreFound = false;
+  if (!selectedCoreId.isEmpty()) {
+    for (const InstalledCoreSnapshot& core : installedCores) {
+      if (core.id == selectedCoreId) {
+        selectedCore = core;
+        selectedCoreFound = true;
+        break;
+      }
+    }
+  }
+
+  QString selectedCoreHardwareRelativePath;
+  QVector<CoreToolDependency> selectedCoreToolDependencies;
+  QStringList bundledToolPaths;
+  QSet<QString> bundledToolPathsSet;
+
+  if (selectedCoreFound && !selectedPackager.isEmpty() &&
+      !selectedArchitecture.isEmpty() &&
+      !selectedCore.installedVersion.trimmed().isEmpty()) {
+    setProgress(32, tr("Bundling selected board core..."));
+    const QString coreHardwareRelativePath =
+        QStringLiteral("arduino-data/packages/%1/hardware/%2/%3")
+            .arg(selectedPackager, selectedArchitecture,
+                 selectedCore.installedVersion.trimmed());
+    const QString coreHardwareSrc =
+        QDir(arduinoDataDir).absoluteFilePath(
+            QStringLiteral("packages/%1/hardware/%2/%3")
+                .arg(selectedPackager, selectedArchitecture,
+                     selectedCore.installedVersion.trimmed()));
+    const QString coreHardwareDst =
+        QDir(bundleRoot).absoluteFilePath(coreHardwareRelativePath);
+
+    if (QFileInfo(coreHardwareSrc).isDir()) {
+      if (copyDirectoryRecursivelyMerged(coreHardwareSrc, coreHardwareDst,
+                                         &copyError)) {
+        selectedCoreHardwareRelativePath = coreHardwareRelativePath;
+        bundledCorePackages << coreHardwareRelativePath;
+      } else {
+        appendNote(
+            tr("Could not copy selected core files: %1").arg(copyError));
+      }
+    } else {
+      appendNote(tr("Selected core directory was not found: %1")
+                     .arg(coreHardwareSrc));
+    }
+
+    setProgress(38, tr("Bundling selected core toolchain..."));
+    const QString installedJsonPath =
+        QDir(coreHardwareSrc).absoluteFilePath(QStringLiteral("installed.json"));
+    selectedCoreToolDependencies = parseCoreToolDependenciesFromInstalledJson(
+        installedJsonPath,
+        selectedPackager,
+        selectedArchitecture,
+        selectedCore.installedVersion.trimmed());
+
+    if (selectedCoreToolDependencies.isEmpty()) {
+      appendNote(
+          tr("Could not detect core tool dependencies from installed metadata."));
+    }
+    for (const CoreToolDependency& dep : selectedCoreToolDependencies) {
+      if (dep.packager.trimmed().isEmpty() || dep.name.trimmed().isEmpty() ||
+          dep.version.trimmed().isEmpty()) {
+        continue;
+      }
+      const QString toolRelativePath =
+          QStringLiteral("arduino-data/packages/%1/tools/%2/%3")
+              .arg(dep.packager, dep.name, dep.version);
+      if (bundledToolPathsSet.contains(toolRelativePath)) {
+        continue;
+      }
+      const QString toolSrc = QDir(arduinoDataDir).absoluteFilePath(
+          QStringLiteral("packages/%1/tools/%2/%3")
+              .arg(dep.packager, dep.name, dep.version));
+      const QString toolDst = QDir(bundleRoot).absoluteFilePath(toolRelativePath);
+      if (QFileInfo(toolSrc).isDir()) {
+        if (copyDirectoryRecursivelyMerged(toolSrc, toolDst, &copyError)) {
+          bundledToolPathsSet.insert(toolRelativePath);
+          bundledToolPaths << toolRelativePath;
+        } else {
+          appendNote(
+              tr("Could not copy tool '%1@%2': %3")
+                  .arg(dep.name, dep.version, copyError));
+        }
+      } else {
+        appendNote(tr("Required tool folder not found: %1").arg(toolSrc));
+      }
+    }
+  } else if (selectedPackager.isEmpty() || selectedArchitecture.isEmpty()) {
+    appendNote(tr("No board selected; no core/toolchain was bundled."));
+  } else {
+    appendNote(
+        tr("Selected core metadata could not be resolved; no core files were bundled."));
+  }
+
+  const QString arduinoDataBundleDir =
+      QDir(bundleRoot).absoluteFilePath(QStringLiteral("arduino-data"));
+  setProgress(50, tr("Copying board/library indexes..."));
+  QDir().mkpath(arduinoDataBundleDir);
+  const QStringList arduinoDataIndexFiles = {
+      QStringLiteral("package_index.json"),
+      QStringLiteral("package_index.json.sig"),
+      QStringLiteral("library_index.json"),
+      QStringLiteral("library_index.json.sig"),
+  };
+  for (const QString& fileName : arduinoDataIndexFiles) {
+    const QString src = QDir(arduinoDataDir).absoluteFilePath(fileName);
+    if (!QFileInfo(src).isFile()) {
+      continue;
+    }
+    const QString dst = QDir(arduinoDataBundleDir).absoluteFilePath(fileName);
+    (void)removePathIfExists(dst);
+    if (!QFile::copy(src, dst)) {
+      appendNote(tr("Could not copy '%1' into bundle.").arg(fileName));
+    }
+  }
+
+  const QSet<QString> usedHeaders = collectSketchIncludeHeaders(sketchFolder);
+  QVector<InstalledLibrarySnapshot> selectedLibraries;
+  for (const InstalledLibrarySnapshot& library : installedLibraries) {
+    bool matches = false;
+    for (const QString& include : library.providesIncludes) {
+      if (usedHeaders.contains(include) ||
+          usedHeaders.contains(QFileInfo(include).fileName())) {
+        matches = true;
+        break;
+      }
+    }
+    if (!matches && !library.name.isEmpty()) {
+      for (const QString& header : usedHeaders) {
+        if (header.startsWith(library.name, Qt::CaseInsensitive)) {
+          matches = true;
+          break;
+        }
+      }
+    }
+    if (matches) {
+      selectedLibraries.push_back(library);
+    }
+  }
+
+  QHash<QString, InstalledLibrarySnapshot> selectedLibraryMap;
+  QStringList dependencyQueue;
+  for (const InstalledLibrarySnapshot& lib : selectedLibraries) {
+    const QString key = lib.name.trimmed().toLower();
+    if (key.isEmpty() || selectedLibraryMap.contains(key)) {
+      continue;
+    }
+    selectedLibraryMap.insert(key, lib);
+    dependencyQueue << key;
+  }
+
+  auto findInstalledLibraryByName = [&installedLibraries](
+                                        const QString& requestedName)
+      -> InstalledLibrarySnapshot {
+    const QString wanted = requestedName.trimmed();
+    if (wanted.isEmpty()) {
+      return {};
+    }
+    for (const InstalledLibrarySnapshot& lib : installedLibraries) {
+      if (lib.name.compare(wanted, Qt::CaseInsensitive) == 0) {
+        return lib;
+      }
+    }
+    for (const InstalledLibrarySnapshot& lib : installedLibraries) {
+      if (lib.name.startsWith(wanted, Qt::CaseInsensitive) ||
+          wanted.startsWith(lib.name, Qt::CaseInsensitive)) {
+        return lib;
+      }
+    }
+    return {};
+  };
+
+  while (!dependencyQueue.isEmpty()) {
+    const QString key = dependencyQueue.takeFirst();
+    if (!selectedLibraryMap.contains(key)) {
+      continue;
+    }
+    const InstalledLibrarySnapshot lib = selectedLibraryMap.value(key);
+    const QStringList deps =
+        parseLibraryDependenciesFromProperties(lib.installDir);
+    for (const QString& depName : deps) {
+      const InstalledLibrarySnapshot depLib = findInstalledLibraryByName(depName);
+      if (depLib.name.trimmed().isEmpty()) {
+        appendNote(tr("Library dependency '%1' was not found locally.")
+                       .arg(depName));
+        continue;
+      }
+      const QString depKey = depLib.name.trimmed().toLower();
+      if (depKey.isEmpty() || selectedLibraryMap.contains(depKey)) {
+        continue;
+      }
+      selectedLibraryMap.insert(depKey, depLib);
+      dependencyQueue << depKey;
+    }
+  }
+
+  selectedLibraries = selectedLibraryMap.values().toVector();
+  std::sort(selectedLibraries.begin(), selectedLibraries.end(),
+            [](const InstalledLibrarySnapshot& left,
+               const InstalledLibrarySnapshot& right) {
+              return QString::localeAwareCompare(left.name, right.name) < 0;
+            });
+
+  bool librariesBundled = false;
+  QHash<QString, QString> bundledLibraryRelativePathByName;
+  setProgress(58, tr("Bundling libraries..."));
+  if (!selectedLibraries.isEmpty()) {
+    for (const InstalledLibrarySnapshot& lib : selectedLibraries) {
+      const QString installDir = lib.installDir.trimmed();
+      if (installDir.isEmpty() || !QFileInfo(installDir).isDir()) {
+        appendNote(
+            tr("Library '%1' is missing an install directory and was skipped.")
+                .arg(lib.name));
+        continue;
+      }
+      if (lib.location.compare(QStringLiteral("platform"), Qt::CaseInsensitive) == 0) {
+        // Platform libraries are included within the bundled core directory.
+        continue;
+      }
+
+      const QString folderName = QFileInfo(installDir).fileName().trimmed();
+      if (folderName.isEmpty()) {
+        appendNote(
+            tr("Library '%1' has an invalid install directory and was skipped.")
+                .arg(lib.name));
+        continue;
+      }
+      const QString relPath = QStringLiteral("libraries/%1").arg(folderName);
+      const QString dstPath = QDir(bundleRoot).absoluteFilePath(relPath);
+      if (copyDirectoryRecursivelyMerged(installDir, dstPath, &copyError)) {
+        librariesBundled = true;
+        bundledLibraryRelativePathByName.insert(lib.name.trimmed().toLower(),
+                                                relPath);
+      } else {
+        appendNote(
+            tr("Could not bundle library '%1': %2").arg(lib.name, copyError));
+      }
+    }
+  } else {
+    appendNote(tr("No project libraries were detected from sketch includes."));
+  }
+
+  QString buildArtifactsSourceDir;
+  bool buildArtifactsFromFreshCompile = false;
+  setProgress(68, tr("Collecting build artifacts..."));
+  const QString currentSignature = computeSketchSignature(sketchFolder);
+  if (!lastSuccessfulCompile_.buildPath.trimmed().isEmpty() &&
+      QFileInfo(lastSuccessfulCompile_.buildPath).isDir() &&
+      QDir(lastSuccessfulCompile_.sketchFolder).absolutePath() ==
+          QDir(sketchFolder).absolutePath() &&
+      lastSuccessfulCompile_.fqbn.trimmed() == fqbn &&
+      !lastSuccessfulCompile_.sketchChangedSinceCompile &&
+      !currentSignature.isEmpty() &&
+      currentSignature == lastSuccessfulCompile_.sketchSignature) {
+    buildArtifactsSourceDir = lastSuccessfulCompile_.buildPath;
+  }
+
+  if (buildArtifactsSourceDir.isEmpty() && !fqbn.isEmpty() &&
+      !cliPath.isEmpty() && arduinoCli_) {
+    setProgress(72, tr("Compiling to capture fresh build artifacts..."));
+    const QString compileBuildDir =
+        QDir(stagingDir.path()).absoluteFilePath(QStringLiteral("build-artifacts-fresh"));
+    QDir().mkpath(compileBuildDir);
+
+    QSettings settings;
+    settings.beginGroup(QStringLiteral("Preferences"));
+    const QString warningsLevel =
+        settings.value(QStringLiteral("compilerWarnings"), QStringLiteral("none"))
+            .toString();
+    const bool verboseCompile =
+        settings.value(QStringLiteral("verboseCompile"), false).toBool();
+    settings.endGroup();
+
+    QStringList args = {QStringLiteral("compile"),
+                        QStringLiteral("--fqbn"),
+                        fqbn,
+                        QStringLiteral("--warnings"),
+                        warningsLevel,
+                        QStringLiteral("--build-path"),
+                        compileBuildDir,
+                        sketchFolder};
+    if (verboseCompile) {
+      args << QStringLiteral("--verbose");
+    }
+    if (actionOptimizeForDebug_ && actionOptimizeForDebug_->isChecked()) {
+      args << QStringLiteral("--optimize-for-debug");
+    }
+
+    const CommandResult compileResult =
+        runCommandBlocking(cliPath, arduinoCli_->withGlobalFlags(args), {}, {},
+                           900000);
+    if (commandSucceeded(compileResult)) {
+      buildArtifactsSourceDir = compileBuildDir;
+      buildArtifactsFromFreshCompile = true;
+    } else {
+      appendNote(
+          tr("Could not compile fresh build artifacts for export: %1")
+              .arg(commandErrorSummary(compileResult)));
+      const QString compileErrorText =
+          compileResult.stderrText + QLatin1Char('\n') + compileResult.stdoutText;
+      static const QRegularExpression missingHeaderRe(
+          QStringLiteral(R"(fatal error:\s*([^\s:]+):\s*No such file or directory)"));
+      const QRegularExpressionMatch missingHeaderMatch =
+          missingHeaderRe.match(compileErrorText);
+      if (missingHeaderMatch.hasMatch()) {
+        appendNote(
+            tr("Missing header/library detected: %1. Install it, run Verify, then export again to include fresh build artifacts.")
+                .arg(missingHeaderMatch.captured(1)));
+      }
+    }
+  }
+
+  bool buildArtifactsBundled = false;
+  QStringList bundledArtifactRelativeFiles;
+  if (!buildArtifactsSourceDir.isEmpty() &&
+      QFileInfo(buildArtifactsSourceDir).isDir()) {
+    setProgress(82, tr("Copying build artifacts..."));
+    const QString buildArtifactsDst =
+        QDir(bundleRoot).absoluteFilePath(QStringLiteral("build-artifacts"));
+    QString artifactCopyError;
+    if (copyBuildArtifactsForSketch(buildArtifactsSourceDir, sketchName,
+                                    buildArtifactsDst,
+                                    &bundledArtifactRelativeFiles,
+                                    &artifactCopyError)) {
+      buildArtifactsBundled = true;
+    } else {
+      appendNote(
+          tr("Could not copy build artifacts: %1")
+              .arg(artifactCopyError));
+    }
+  } else {
+    appendNote(
+        tr("No build artifacts available. Run Verify to bundle compiled output."));
+  }
+
+  QJsonObject manifest;
+  setProgress(90, tr("Writing bundle manifest..."));
+  manifest.insert(QStringLiteral("format"),
+                  QString::fromLatin1(kProjectBundleFormat));
+  manifest.insert(QStringLiteral("version"), kProjectBundleVersion);
+  manifest.insert(QStringLiteral("generatedAt"),
+                  QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+  manifest.insert(QStringLiteral("ideVersion"),
+                  QStringLiteral(REWRITTO_IDE_VERSION));
+
+  QJsonObject sketchObj;
+  sketchObj.insert(QStringLiteral("name"), sketchName);
+  sketchObj.insert(QStringLiteral("relative_path"), QStringLiteral("sketch"));
+  sketchObj.insert(QStringLiteral("original_path"), sketchFolder);
+  manifest.insert(QStringLiteral("sketch"), sketchObj);
+
+  QJsonObject boardObj;
+  boardObj.insert(QStringLiteral("fqbn"), fqbn);
+  boardObj.insert(QStringLiteral("programmer"), currentProgrammer());
+  boardObj.insert(QStringLiteral("port"), currentPort());
+  manifest.insert(QStringLiteral("board"), boardObj);
+
+  QJsonArray additionalUrlsJson;
+  for (const QString& url : additionalUrls) {
+    additionalUrlsJson.append(url);
+  }
+  manifest.insert(QStringLiteral("additional_urls"), additionalUrlsJson);
+
+  QJsonObject cliObj;
+  cliObj.insert(QStringLiteral("data_dir"), arduinoDataDir);
+  cliObj.insert(QStringLiteral("user_dir"), sketchbookDir);
+  manifest.insert(QStringLiteral("arduino_cli"), cliObj);
+
+  QJsonArray bundledCorePackagesJson;
+  for (const QString& rel : bundledCorePackages) {
+    bundledCorePackagesJson.append(rel);
+  }
+  manifest.insert(QStringLiteral("bundled_core_packages"),
+                  bundledCorePackagesJson);
+
+  QJsonArray bundledToolsJson;
+  for (const QString& rel : bundledToolPaths) {
+    bundledToolsJson.append(rel);
+  }
+  manifest.insert(QStringLiteral("bundled_tools"),
+                  bundledToolsJson);
+
+  QJsonArray coresJson;
+  if (selectedCoreFound) {
+    QJsonObject item;
+    item.insert(QStringLiteral("id"), selectedCore.id);
+    item.insert(QStringLiteral("version"), selectedCore.installedVersion);
+    item.insert(QStringLiteral("name"), selectedCore.name);
+    item.insert(QStringLiteral("relative_path"), selectedCoreHardwareRelativePath);
+    QJsonArray toolDepsJson;
+    for (const CoreToolDependency& dep : selectedCoreToolDependencies) {
+      QJsonObject depObj;
+      depObj.insert(QStringLiteral("packager"), dep.packager);
+      depObj.insert(QStringLiteral("name"), dep.name);
+      depObj.insert(QStringLiteral("version"), dep.version);
+      toolDepsJson.append(depObj);
+    }
+    item.insert(QStringLiteral("tool_dependencies"), toolDepsJson);
+    coresJson.append(item);
+  }
+  manifest.insert(QStringLiteral("selected_cores"), coresJson);
+
+  QJsonArray selectedLibrariesJson;
+  for (const InstalledLibrarySnapshot& lib : selectedLibraries) {
+    QJsonObject item;
+    item.insert(QStringLiteral("name"), lib.name);
+    item.insert(QStringLiteral("version"), lib.version);
+    QJsonArray includes;
+    for (const QString& include : lib.providesIncludes) {
+      includes.append(include);
+    }
+    item.insert(QStringLiteral("includes"), includes);
+    item.insert(QStringLiteral("location"), lib.location);
+    item.insert(
+        QStringLiteral("bundle_relative_path"),
+        bundledLibraryRelativePathByName.value(lib.name.trimmed().toLower()));
+    selectedLibrariesJson.append(item);
+  }
+  manifest.insert(QStringLiteral("selected_libraries"), selectedLibrariesJson);
+  manifest.insert(QStringLiteral("libraries_bundle_relative_path"),
+                  librariesBundled ? QStringLiteral("libraries") : QString{});
+
+  QJsonObject buildObj;
+  buildObj.insert(QStringLiteral("included"), buildArtifactsBundled);
+  buildObj.insert(QStringLiteral("relative_path"),
+                  buildArtifactsBundled ? QStringLiteral("build-artifacts")
+                                        : QString{});
+  buildObj.insert(QStringLiteral("fresh_compile"),
+                  buildArtifactsFromFreshCompile);
+  QJsonArray buildFilesJson;
+  for (const QString& rel : bundledArtifactRelativeFiles) {
+    buildFilesJson.append(rel);
+  }
+  buildObj.insert(QStringLiteral("files"), buildFilesJson);
+  manifest.insert(QStringLiteral("build_artifacts"), buildObj);
+
+  QJsonArray notesJson;
+  notes = normalizeStringList(notes);
+  for (const QString& note : notes) {
+    notesJson.append(note);
+  }
+  manifest.insert(QStringLiteral("notes"), notesJson);
+
+  const QString manifestPath = QDir(bundleRoot).absoluteFilePath(
+      QString::fromLatin1(kProjectBundleManifestFile));
+  QSaveFile save(manifestPath);
+  if (!save.open(QIODevice::WriteOnly | QIODevice::Text)) {
+    QMessageBox::warning(this, tr("Export Project ZIP"),
+                         tr("Could not write project bundle manifest."));
+    return;
+  }
+  const QByteArray manifestBytes =
+      QJsonDocument(manifest).toJson(QJsonDocument::Indented);
+  if (save.write(manifestBytes) != manifestBytes.size() || !save.commit()) {
+    QMessageBox::warning(this, tr("Export Project ZIP"),
+                         tr("Failed to save project bundle manifest."));
+    return;
+  }
+
+  const qint64 bundleSizeBytes = directorySizeBytes(bundleRoot);
+  const QString bundleSizeText = formatByteSize(bundleSizeBytes);
+  if (bundleSizeBytes >= 512LL * 1024LL * 1024LL) {
+    const auto reply = QMessageBox::question(
+        this,
+        tr("Large Bundle Warning"),
+        tr("Bundle size before compression is %1.\n\n"
+           "Creating the ZIP may take several minutes depending on disk speed.\n\n"
+           "Continue?")
+            .arg(bundleSizeText),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::Yes);
+    if (reply != QMessageBox::Yes) {
+      progress.close();
+      return;
+    }
+  }
+
+  setProgress(96, tr("Creating ZIP archive (%1 before compression)...")
+                      .arg(bundleSizeText));
+  progress.setRange(0, 0);
+  QString archiveError;
+  if (!createZipArchive(
+          bundleRoot, zipPath, &archiveError,
+          [this, &progress](const QString& status) {
+            progress.setLabelText(status);
+            QCoreApplication::processEvents();
+          })) {
+    progress.close();
+    QMessageBox::warning(this, tr("Export Project ZIP"),
+                         tr("Could not create archive.\n\n%1")
+                             .arg(archiveError.trimmed().isEmpty()
+                                      ? tr("No compatible archive tool found.")
+                                      : archiveError.trimmed()));
+    return;
+  }
+  progress.setRange(0, 100);
+  setProgress(100, tr("Export complete."));
+  progress.close();
+
+  if (output_) {
+    output_->appendLine(tr("[Project Export] Bundle saved to: %1").arg(zipPath));
+  }
+  if (notes.isEmpty()) {
+    QMessageBox::information(
+        this, tr("Export Project ZIP"),
+        tr("Project bundle exported successfully.\n\n%1").arg(zipPath));
+  } else {
+    QMessageBox::information(
+        this, tr("Export Project ZIP"),
+        tr("Project bundle exported with notes.\n\n%1\n\nNotes:\n- %2")
+            .arg(zipPath, notes.join(QStringLiteral("\n- "))));
+  }
+}
+
+void MainWindow::importProjectZip() {
+  const QString zipPath = QFileDialog::getOpenFileName(
+      this,
+      tr("Import Project ZIP"),
+      QDir::homePath(),
+      tr("ZIP Files (*.zip);;All Files (*)"));
+  if (zipPath.trimmed().isEmpty()) {
+    return;
+  }
+
+  const QString destinationRoot = QFileDialog::getExistingDirectory(
+      this,
+      tr("Choose Destination Folder for Imported Sketch"),
+      defaultSketchbookDir());
+  if (destinationRoot.trimmed().isEmpty()) {
+    return;
+  }
+
+  if (!QFileInfo(zipPath).isFile()) {
+    QMessageBox::warning(this, tr("Import Project ZIP"),
+                         tr("Selected archive does not exist."));
+    return;
+  }
+
+  QTemporaryDir extractionDir;
+  if (!extractionDir.isValid()) {
+    QMessageBox::warning(this, tr("Import Project ZIP"),
+                         tr("Could not create temporary extraction folder."));
+    return;
+  }
+
+  const QString extractedRoot =
+      QDir(extractionDir.path()).absoluteFilePath(QStringLiteral("extracted"));
+  QDir().mkpath(extractedRoot);
+
+  QString extractError;
+  if (!extractZipArchive(zipPath, extractedRoot, &extractError)) {
+    QMessageBox::warning(
+        this, tr("Import Project ZIP"),
+        tr("Could not extract archive.\n\n%1").arg(extractError.trimmed()));
+    return;
+  }
+
+  const QString bundleRoot = findBundleRootDirectory(
+      extractedRoot, QString::fromLatin1(kProjectBundleManifestFile));
+  if (bundleRoot.trimmed().isEmpty()) {
+    QMessageBox::warning(this, tr("Import Project ZIP"),
+                         tr("Bundle manifest was not found in the archive."));
+    return;
+  }
+
+  QFile manifestFile(QDir(bundleRoot).absoluteFilePath(
+      QString::fromLatin1(kProjectBundleManifestFile)));
+  if (!manifestFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    QMessageBox::warning(this, tr("Import Project ZIP"),
+                         tr("Could not open bundle manifest."));
+    return;
+  }
+  const QJsonDocument manifestDoc =
+      QJsonDocument::fromJson(manifestFile.readAll());
+  if (!manifestDoc.isObject()) {
+    QMessageBox::warning(this, tr("Import Project ZIP"),
+                         tr("Bundle manifest is not valid JSON."));
+    return;
+  }
+  const QJsonObject manifest = manifestDoc.object();
+  const QString format = manifest.value(QStringLiteral("format")).toString().trimmed();
+  if (!format.isEmpty() && format != QString::fromLatin1(kProjectBundleFormat)) {
+    QMessageBox::warning(this, tr("Import Project ZIP"),
+                         tr("Unsupported bundle format: %1").arg(format));
+    return;
+  }
+
+  const QJsonObject sketchObj = manifest.value(QStringLiteral("sketch")).toObject();
+  QString sketchRel = sketchObj.value(QStringLiteral("relative_path")).toString().trimmed();
+  if (sketchRel.isEmpty()) {
+    sketchRel = QStringLiteral("sketch");
+  }
+  const QString sketchSourcePath = QDir(bundleRoot).absoluteFilePath(sketchRel);
+  if (!QFileInfo(sketchSourcePath).isDir()) {
+    QMessageBox::warning(this, tr("Import Project ZIP"),
+                         tr("Sketch folder was not found inside the bundle."));
+    return;
+  }
+
+  QString sketchName = sketchObj.value(QStringLiteral("name")).toString().trimmed();
+  if (sketchName.isEmpty()) {
+    sketchName = QFileInfo(sketchSourcePath).fileName().trimmed();
+  }
+  if (sketchName.isEmpty()) {
+    sketchName = QStringLiteral("imported_sketch");
+  }
+
+  QString destinationSketchPath =
+      QDir(destinationRoot).absoluteFilePath(sketchName);
+  if (QFileInfo(destinationSketchPath).exists()) {
+    int suffix = 1;
+    QString candidate;
+    do {
+      candidate = QDir(destinationRoot).absoluteFilePath(
+          QStringLiteral("%1_imported_%2").arg(sketchName).arg(suffix));
+      ++suffix;
+    } while (QFileInfo(candidate).exists());
+    destinationSketchPath = candidate;
+  }
+
+  QString copyError;
+  if (!copyDirectoryRecursivelyMerged(sketchSourcePath, destinationSketchPath,
+                                      &copyError)) {
+    QMessageBox::warning(
+        this, tr("Import Project ZIP"),
+        tr("Could not copy sketch files.\n\n%1").arg(copyError));
+    return;
+  }
+
+  QStringList notes;
+  auto appendNote = [&notes](const QString& text) {
+    const QString trimmed = text.trimmed();
+    if (!trimmed.isEmpty()) {
+      notes << trimmed;
+    }
+  };
+
+  QString arduinoDataDir = defaultArduinoDataDirPath();
+  const QString cliPath =
+      arduinoCli_ ? arduinoCli_->arduinoCliPath().trimmed() : QString{};
+  if (!cliPath.isEmpty() && arduinoCli_) {
+    const ArduinoCliDirectories dirs =
+        readArduinoCliDirectories(cliPath, arduinoCli_->withGlobalFlags({}));
+    if (!dirs.dataDir.trimmed().isEmpty()) {
+      arduinoDataDir = dirs.dataDir.trimmed();
+    }
+  }
+
+  const QString bundledArduinoDataPath =
+      QDir(bundleRoot).absoluteFilePath(QStringLiteral("arduino-data"));
+  if (QFileInfo(bundledArduinoDataPath).isDir()) {
+    if (!copyDirectoryRecursivelyMerged(bundledArduinoDataPath, arduinoDataDir,
+                                        &copyError)) {
+      appendNote(
+          tr("Could not restore bundled board core data: %1")
+              .arg(copyError));
+    }
+  }
+
+  const QString bundledLibrariesPath =
+      QDir(bundleRoot).absoluteFilePath(QStringLiteral("libraries"));
+  if (QFileInfo(bundledLibrariesPath).isDir()) {
+    const QString targetLibrariesPath =
+        QDir(destinationSketchPath).absoluteFilePath(QStringLiteral("libraries"));
+    if (!copyDirectoryRecursivelyMerged(bundledLibrariesPath,
+                                        targetLibrariesPath,
+                                        &copyError)) {
+      appendNote(
+          tr("Could not restore bundled libraries: %1")
+              .arg(copyError));
+    } else if (output_) {
+      output_->appendLine(
+          tr("[Project Import] Restored sketch-local libraries: %1")
+              .arg(targetLibrariesPath));
+    }
+  }
+
+  const QString bundledBuildPath =
+      QDir(bundleRoot).absoluteFilePath(QStringLiteral("build-artifacts"));
+  if (QFileInfo(bundledBuildPath).isDir()) {
+    const QString targetBuildPath = QDir(destinationSketchPath).absoluteFilePath(
+        QStringLiteral(".rewritto/build-artifacts"));
+    if (!copyDirectoryRecursivelyMerged(bundledBuildPath, targetBuildPath,
+                                        &copyError)) {
+      appendNote(
+          tr("Could not restore bundled build artifacts: %1")
+              .arg(copyError));
+    }
+  }
+
+  auto jsonArrayToStringList = [](const QJsonValue& value) {
+    QStringList out;
+    const QJsonArray array = value.toArray();
+    out.reserve(array.size());
+    for (const QJsonValue& item : array) {
+      const QString text = item.toString().trimmed();
+      if (!text.isEmpty()) {
+        out << text;
+      }
+    }
+    return normalizeStringList(out);
+  };
+
+  const QStringList additionalUrls =
+      jsonArrayToStringList(manifest.value(QStringLiteral("additional_urls")));
+  if (!additionalUrls.isEmpty()) {
+    QString mergeError;
+    if (!mergeAdditionalBoardUrlsIntoPreferences(additionalUrls, &mergeError,
+                                                 nullptr)) {
+      appendNote(
+          tr("Could not merge additional board manager URLs: %1")
+              .arg(mergeError));
+    }
+  }
+
+  const QJsonObject boardObj = manifest.value(QStringLiteral("board")).toObject();
+  const QString importedFqbn = boardObj.value(QStringLiteral("fqbn")).toString().trimmed();
+  const QString importedProgrammer =
+      boardObj.value(QStringLiteral("programmer")).toString().trimmed();
+
+  const bool opened = openSketchFolderInUi(destinationSketchPath);
+  if (!opened) {
+    appendNote(tr("Sketch was restored but could not be opened automatically."));
+  } else if (!importedFqbn.isEmpty()) {
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+    settings.setValue(kFqbnKey, importedFqbn);
+    settings.endGroup();
+    storeFqbnForCurrentSketch(importedFqbn);
+    if (boardCombo_) {
+      const int index = boardCombo_->findData(importedFqbn);
+      if (index >= 0) {
+        boardCombo_->setCurrentIndex(index);
+      }
+    }
+  }
+  if (!importedProgrammer.isEmpty()) {
+    setProgrammer(importedProgrammer);
+  }
+
+  if (boardsManager_) {
+    boardsManager_->refresh();
+  }
+  if (libraryManager_) {
+    libraryManager_->refresh();
+  }
+  refreshInstalledBoards();
+  refreshConnectedPorts();
+
+  notes = normalizeStringList(notes);
+  if (output_) {
+    output_->appendLine(
+        tr("[Project Import] Bundle imported to: %1").arg(destinationSketchPath));
+    for (const QString& note : notes) {
+      output_->appendLine(tr("[Project Import] Note: %1").arg(note));
+    }
+  }
+
+  if (notes.isEmpty()) {
+    QMessageBox::information(
+        this, tr("Import Project ZIP"),
+        tr("Project bundle imported successfully.\n\n%1")
+            .arg(destinationSketchPath));
+  } else {
+    QMessageBox::information(
+        this, tr("Import Project ZIP"),
+        tr("Project bundle imported with notes.\n\n%1\n\nNotes:\n- %2")
+            .arg(destinationSketchPath, notes.join(QStringLiteral("\n- "))));
+  }
+}
+
 void MainWindow::showQuickOpen() {
   if (!editor_) return;
 
@@ -6852,6 +9003,10 @@ void MainWindow::showCommandPalette() {
           tr("Open an existing .ino sketch"));
   addItem(QStringLiteral("openSketchFolder"), tr("Open Sketch Folder"),
           tr("Open a sketch folder"));
+  addItem(QStringLiteral("exportProjectZip"), tr("Export Project ZIP"),
+          tr("Export sketch, dependencies, and build artifacts"));
+  addItem(QStringLiteral("importProjectZip"), tr("Import Project ZIP"),
+          tr("Import sketch and dependencies from a project bundle"));
   addItem(QStringLiteral("verifySketch"), tr("Verify"),
           tr("Compile current sketch"));
   addItem(QStringLiteral("uploadSketch"), tr("Verify and Upload"),
@@ -6884,6 +9039,22 @@ void MainWindow::showCommandPalette() {
           tr("Show/hide serial plotter"));
   addItem(QStringLiteral("openPreferences"), tr("Preferences"),
           tr("Open IDE settings"));
+  addItem(QStringLiteral("requestCompletion"), tr("Trigger Completion"),
+          tr("Ask language server for completion items"));
+  addItem(QStringLiteral("showHover"), tr("Show Hover"),
+          tr("Show hover information at cursor"));
+  addItem(QStringLiteral("goToDefinition"), tr("Go to Definition"),
+          tr("Navigate to symbol definition"));
+  addItem(QStringLiteral("findReferences"), tr("Find References"),
+          tr("List symbol references across workspace"));
+  addItem(QStringLiteral("renameSymbol"), tr("Rename Symbol"),
+          tr("Rename symbol and apply edits"));
+  addItem(QStringLiteral("codeActions"), tr("Code Actions"),
+          tr("Show available quick fixes and refactors"));
+  addItem(QStringLiteral("organizeImports"), tr("Organize Imports"),
+          tr("Run organize imports code action"));
+  addItem(QStringLiteral("formatDocument"), tr("Format Document"),
+          tr("Format current file via language server"));
   addItem(QStringLiteral("configureMcp"), tr("Configure MCP"),
           tr("Set MCP server command"));
   addItem(QStringLiteral("startMcp"), tr("Start MCP Server"),
@@ -6905,6 +9076,10 @@ void MainWindow::showCommandPalette() {
       openSketch();
     } else if (commandId == QStringLiteral("openSketchFolder")) {
       openSketchFolder();
+    } else if (commandId == QStringLiteral("exportProjectZip")) {
+      exportProjectZip();
+    } else if (commandId == QStringLiteral("importProjectZip")) {
+      importProjectZip();
     } else if (commandId == QStringLiteral("verifySketch")) {
       verifySketch();
     } else if (commandId == QStringLiteral("uploadSketch")) {
@@ -6947,6 +9122,22 @@ void MainWindow::showCommandPalette() {
       if (actionPreferences_) {
         actionPreferences_->trigger();
       }
+    } else if (commandId == QStringLiteral("requestCompletion")) {
+      requestCompletion();
+    } else if (commandId == QStringLiteral("showHover")) {
+      showHover();
+    } else if (commandId == QStringLiteral("goToDefinition")) {
+      goToDefinition();
+    } else if (commandId == QStringLiteral("findReferences")) {
+      findReferences();
+    } else if (commandId == QStringLiteral("renameSymbol")) {
+      renameSymbol();
+    } else if (commandId == QStringLiteral("codeActions")) {
+      showCodeActions();
+    } else if (commandId == QStringLiteral("organizeImports")) {
+      showCodeActions({QStringLiteral("source.organizeImports")});
+    } else if (commandId == QStringLiteral("formatDocument")) {
+      formatDocument();
     } else if (commandId == QStringLiteral("configureMcp")) {
       configureMcpServer();
     } else if (commandId == QStringLiteral("startMcp")) {
@@ -7003,6 +9194,262 @@ void MainWindow::goToLine() {
   }
 }
 
+void MainWindow::handleQuickFix(const QString& filePath,
+                                int line,
+                                int column,
+                                const QString& fixType) {
+  if (!editor_) {
+    return;
+  }
+
+  const QString normalizedFix = fixType.trimmed();
+  if (normalizedFix.isEmpty()) {
+    return;
+  }
+
+  const QString absPath =
+      normalizeDiagnosticPath(filePath, line, currentSketchFolderPath());
+  if (absPath.trimmed().isEmpty() || line <= 0) {
+    showToast(tr("Quick fix requires a valid file location."));
+    return;
+  }
+
+  if (!editor_->openLocation(absPath, line, column)) {
+    showToast(tr("Could not open file for quick fix."));
+    return;
+  }
+
+  auto* plain = qobject_cast<QPlainTextEdit*>(editor_->currentEditorWidget());
+  if (!plain || !plain->document()) {
+    showToast(tr("No editable document available for quick fix."));
+    return;
+  }
+
+  QTextDocument* doc = plain->document();
+  const QTextBlock block = doc->findBlockByNumber(qMax(0, line - 1));
+  if (!block.isValid()) {
+    showToast(tr("Quick fix location is out of range."));
+    return;
+  }
+
+  const QString lineText = block.text();
+  const int maxBlockColumn = qMax(0, block.length() - 1);
+  const int safeColumn = qBound(0, column > 0 ? column - 1 : 0, maxBlockColumn);
+
+  if (normalizedFix == QStringLiteral("insert_semicolon")) {
+    int insertOffset = safeColumn;
+    if (column <= 0) {
+      insertOffset = lineText.size();
+      while (insertOffset > 0 &&
+             (lineText.at(insertOffset - 1) == QLatin1Char(' ') ||
+              lineText.at(insertOffset - 1) == QLatin1Char('\t'))) {
+        --insertOffset;
+      }
+    }
+
+    const int insertPos = block.position() + insertOffset;
+    if (insertPos > 0 && doc->characterAt(insertPos - 1) == QLatin1Char(';')) {
+      showToast(tr("Line already ends with a semicolon."));
+      return;
+    }
+
+    QTextCursor cursor(doc);
+    cursor.setPosition(insertPos);
+    cursor.insertText(QStringLiteral(";"));
+    plain->setFocus(Qt::OtherFocusReason);
+    showToast(tr("Inserted semicolon quick fix."));
+    return;
+  }
+
+  if (normalizedFix == QStringLiteral("insert_brace")) {
+    QTextCursor cursor(doc);
+    cursor.beginEditBlock();
+
+    const QString trimmed = lineText.trimmed();
+    if (!trimmed.contains(QLatin1Char('{')) && trimmed.endsWith(QLatin1Char(')'))) {
+      int insertOffset = lineText.size();
+      while (insertOffset > 0 &&
+             (lineText.at(insertOffset - 1) == QLatin1Char(' ') ||
+              lineText.at(insertOffset - 1) == QLatin1Char('\t'))) {
+        --insertOffset;
+      }
+      cursor.setPosition(block.position() + insertOffset);
+      cursor.insertText(QStringLiteral(" {"));
+    } else {
+      QString indent;
+      int i = 0;
+      while (i < lineText.size() &&
+             (lineText.at(i) == QLatin1Char(' ') || lineText.at(i) == QLatin1Char('\t'))) {
+        indent += lineText.at(i);
+        ++i;
+      }
+      const int insertPos = block.position() + qMax(0, block.length() - 1);
+      cursor.setPosition(insertPos);
+      cursor.insertText(QStringLiteral("\n%1}").arg(indent));
+    }
+
+    cursor.endEditBlock();
+    plain->setFocus(Qt::OtherFocusReason);
+    showToast(tr("Inserted brace quick fix."));
+    return;
+  }
+
+  if (normalizedFix == QStringLiteral("mark_unused")) {
+    const QString identifier = identifierNearColumn(lineText, column);
+    if (identifier.isEmpty()) {
+      showToast(tr("Could not detect variable name for quick fix."));
+      return;
+    }
+    if (identifier.startsWith(QLatin1Char('_'))) {
+      showToast(tr("Variable is already marked as unused."));
+      return;
+    }
+
+    const QRegularExpression tokenExpr(
+        QStringLiteral("\\b%1\\b").arg(QRegularExpression::escape(identifier)));
+    QRegularExpressionMatchIterator it = tokenExpr.globalMatch(lineText);
+    int bestStart = -1;
+    int bestLength = 0;
+    int bestDistance = std::numeric_limits<int>::max();
+    while (it.hasNext()) {
+      const QRegularExpressionMatch m = it.next();
+      const int start = m.capturedStart();
+      if (start < 0) {
+        continue;
+      }
+      const int distance = std::abs(start - safeColumn);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestStart = start;
+        bestLength = m.capturedLength();
+      }
+    }
+
+    if (bestStart < 0 || bestLength <= 0) {
+      showToast(tr("Could not apply unused-variable quick fix."));
+      return;
+    }
+
+    QTextCursor cursor(doc);
+    cursor.setPosition(block.position() + bestStart);
+    cursor.setPosition(block.position() + bestStart + bestLength, QTextCursor::KeepAnchor);
+    cursor.insertText(QStringLiteral("_%1").arg(identifier));
+    plain->setFocus(Qt::OtherFocusReason);
+    showToast(tr("Marked variable as unused."));
+    return;
+  }
+
+  if (normalizedFix == QStringLiteral("remove_variable")) {
+    QTextCursor cursor(block);
+    cursor.beginEditBlock();
+    cursor.select(QTextCursor::LineUnderCursor);
+    cursor.removeSelectedText();
+    if (cursor.position() < doc->characterCount() - 1 &&
+        doc->characterAt(cursor.position()) == QChar::ParagraphSeparator) {
+      cursor.deleteChar();
+    }
+    cursor.endEditBlock();
+    plain->setFocus(Qt::OtherFocusReason);
+    showToast(tr("Removed variable line."));
+    return;
+  }
+
+  if (normalizedFix == QStringLiteral("create_declaration")) {
+    const QString symbol = identifierNearColumn(lineText, column);
+    if (symbol.isEmpty()) {
+      showToast(tr("Could not infer declaration name."));
+      return;
+    }
+
+    const QRegularExpression existing(
+        QStringLiteral("(^|\\n)\\s*(class|struct)\\s+%1\\s*;")
+            .arg(QRegularExpression::escape(symbol)),
+        QRegularExpression::MultilineOption);
+    if (existing.match(doc->toPlainText()).hasMatch()) {
+      showToast(tr("Forward declaration already exists."));
+      return;
+    }
+
+    QTextCursor cursor(doc);
+    cursor.setPosition(declarationInsertPosition(doc));
+    if (cursor.position() > 0 &&
+        doc->characterAt(cursor.position() - 1) != QLatin1Char('\n') &&
+        doc->characterAt(cursor.position() - 1) != QChar::ParagraphSeparator) {
+      cursor.insertText(QStringLiteral("\n"));
+    }
+    cursor.insertText(QStringLiteral("class %1;\n").arg(symbol));
+    plain->setFocus(Qt::OtherFocusReason);
+    showToast(tr("Inserted forward declaration."));
+    return;
+  }
+
+  if (normalizedFix == QStringLiteral("add_include_guard")) {
+    const QString text = doc->toPlainText();
+    static const QRegularExpression pragmaOnceExpr(
+        QStringLiteral("^\\s*#\\s*pragma\\s+once\\b"),
+        QRegularExpression::MultilineOption | QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression includeGuardExpr(
+        QStringLiteral("^\\s*#\\s*ifndef\\s+\\w+\\s*\\n\\s*#\\s*define\\s+\\w+"),
+        QRegularExpression::MultilineOption | QRegularExpression::CaseInsensitiveOption);
+
+    if (pragmaOnceExpr.match(text).hasMatch() ||
+        includeGuardExpr.match(text).hasMatch()) {
+      showToast(tr("Include guard already exists."));
+      return;
+    }
+
+    const QString guard = includeGuardSymbolFromPath(absPath);
+    QString body = text;
+    if (!body.endsWith(QLatin1Char('\n'))) {
+      body += QLatin1Char('\n');
+    }
+    const QString wrapped =
+        QStringLiteral("#ifndef %1\n#define %1\n\n").arg(guard) +
+        body +
+        QStringLiteral("\n#endif // %1\n").arg(guard);
+
+    QTextCursor cursor(doc);
+    cursor.beginEditBlock();
+    cursor.select(QTextCursor::Document);
+    cursor.insertText(wrapped);
+    cursor.endEditBlock();
+    plain->setFocus(Qt::OtherFocusReason);
+    showToast(tr("Added include guard."));
+    return;
+  }
+
+  if (normalizedFix == QStringLiteral("add_prototype")) {
+    const QString symbol = identifierNearColumn(lineText, column);
+    if (symbol.isEmpty()) {
+      showToast(tr("Could not infer function name for prototype."));
+      return;
+    }
+
+    const QRegularExpression existing(
+        QStringLiteral("^\\s*[A-Za-z_][A-Za-z0-9_:<>,\\s*&]*\\b%1\\s*\\([^\\n]*\\)\\s*[;{]")
+            .arg(QRegularExpression::escape(symbol)),
+        QRegularExpression::MultilineOption);
+    if (existing.match(doc->toPlainText()).hasMatch()) {
+      showToast(tr("Function declaration already exists."));
+      return;
+    }
+
+    QTextCursor cursor(doc);
+    cursor.setPosition(declarationInsertPosition(doc));
+    if (cursor.position() > 0 &&
+        doc->characterAt(cursor.position() - 1) != QLatin1Char('\n') &&
+        doc->characterAt(cursor.position() - 1) != QChar::ParagraphSeparator) {
+      cursor.insertText(QStringLiteral("\n"));
+    }
+    cursor.insertText(QStringLiteral("void %1();\n").arg(symbol));
+    plain->setFocus(Qt::OtherFocusReason);
+    showToast(tr("Inserted function prototype (update signature if needed)."));
+    return;
+  }
+
+  showToast(tr("Quick fix type is not implemented yet."));
+}
+
 void MainWindow::showGoToSymbol() {
   // Show quick pick dialog with symbols from current file
   if (!lsp_ || !lsp_->isReady() || !editor_) return;
@@ -7050,6 +9497,839 @@ void MainWindow::showGoToSymbol() {
       }
       dialog->deleteLater();
     });
+}
+
+void MainWindow::requestCompletion() {
+  if (!lsp_ || !lsp_->isReady() || !editor_) {
+    showToast(tr("Language server is not ready."));
+    return;
+  }
+
+  auto* plain = qobject_cast<QPlainTextEdit*>(editor_->currentEditorWidget());
+  const QString filePath = editor_->currentFilePath().trimmed();
+  if (!plain || filePath.isEmpty()) {
+    return;
+  }
+
+  const QTextCursor cursor = plain->textCursor();
+  const QTextBlock block = cursor.block();
+  const int line = qMax(0, block.blockNumber());
+  const int character = qMax(0, cursor.position() - block.position());
+  const QString uri = toFileUri(filePath);
+
+  const QJsonObject params{
+      {QStringLiteral("textDocument"),
+       QJsonObject{{QStringLiteral("uri"), uri}}},
+      {QStringLiteral("position"),
+       QJsonObject{{QStringLiteral("line"), line},
+                   {QStringLiteral("character"), character}}},
+  };
+
+  lsp_->request(
+      QStringLiteral("textDocument/completion"), params,
+      [this, uri](const QJsonValue& result, const QJsonObject& error) {
+        if (!error.isEmpty()) {
+          showToast(tr("Completion request failed."));
+          return;
+        }
+
+        QJsonArray completionItems;
+        if (result.isArray()) {
+          completionItems = result.toArray();
+        } else if (result.isObject()) {
+          completionItems =
+              result.toObject().value(QStringLiteral("items")).toArray();
+        }
+
+        if (completionItems.isEmpty()) {
+          showToast(tr("No completions available."));
+          return;
+        }
+
+        auto* dialog = new QuickPickDialog(this);
+        dialog->setPlaceholderText(tr("Choose completion..."));
+        QVector<QuickPickDialog::Item> items;
+        items.reserve(qMin(400, completionItems.size()));
+        for (const QJsonValue& value : completionItems) {
+          if (!value.isObject()) {
+            continue;
+          }
+          const QJsonObject obj = value.toObject();
+          const QString label = obj.value(QStringLiteral("label")).toString().trimmed();
+          if (label.isEmpty()) {
+            continue;
+          }
+          const QString detail = obj.value(QStringLiteral("detail")).toString().trimmed();
+          QuickPickDialog::Item item;
+          item.label = label;
+          item.detail = detail;
+          item.data = obj;
+          items.push_back(item);
+          if (items.size() >= 400) {
+            break;
+          }
+        }
+
+        dialog->setItems(items);
+        if (dialog->exec() != QDialog::Accepted) {
+          dialog->deleteLater();
+          return;
+        }
+
+        const QJsonObject selected = dialog->selectedData().toJsonObject();
+        dialog->deleteLater();
+        if (selected.isEmpty() || !editor_) {
+          return;
+        }
+
+        auto* plainEditor = qobject_cast<QPlainTextEdit*>(editor_->currentEditorWidget());
+        if (!plainEditor || !plainEditor->document()) {
+          return;
+        }
+        QTextDocument* doc = plainEditor->document();
+        QTextCursor textCursor = plainEditor->textCursor();
+
+        int startPos = textCursor.position();
+        int endPos = textCursor.position();
+        QString newText = selected.value(QStringLiteral("insertText")).toString();
+        if (newText.isEmpty()) {
+          newText = selected.value(QStringLiteral("label")).toString();
+        }
+
+        QJsonObject textEditObj = selected.value(QStringLiteral("textEdit")).toObject();
+        if (!textEditObj.isEmpty()) {
+          QJsonObject rangeObj = textEditObj.value(QStringLiteral("range")).toObject();
+          if (rangeObj.isEmpty()) {
+            rangeObj = textEditObj.value(QStringLiteral("replace")).toObject();
+          }
+          if (!rangeObj.isEmpty() &&
+              lspRangeToDocumentOffsets(doc, rangeObj, &startPos, &endPos)) {
+            // keep resolved range
+          } else {
+            startPos = textCursor.position();
+            endPos = textCursor.position();
+          }
+          const QString fromEdit = textEditObj.value(QStringLiteral("newText")).toString();
+          if (!fromEdit.isEmpty()) {
+            newText = fromEdit;
+          }
+        } else if (!textCursor.hasSelection()) {
+          QTextCursor word = textCursor;
+          word.select(QTextCursor::WordUnderCursor);
+          if (!word.selectedText().trimmed().isEmpty()) {
+            startPos = word.selectionStart();
+            endPos = word.selectionEnd();
+          }
+        } else {
+          startPos = textCursor.selectionStart();
+          endPos = textCursor.selectionEnd();
+        }
+
+        const int insertTextFormat =
+            selected.value(QStringLiteral("insertTextFormat")).toInt(1);
+        if (insertTextFormat == 2) {
+          if (auto* codeEditor = qobject_cast<CodeEditor*>(plainEditor)) {
+            codeEditor->insertSnippet(startPos, endPos, newText);
+          } else {
+            QTextCursor c(doc);
+            c.setPosition(startPos);
+            c.setPosition(endPos, QTextCursor::KeepAnchor);
+            c.insertText(newText);
+          }
+        } else {
+          QTextCursor c(doc);
+          c.setPosition(startPos);
+          c.setPosition(endPos, QTextCursor::KeepAnchor);
+          c.insertText(newText);
+        }
+
+        const QJsonArray additional =
+            selected.value(QStringLiteral("additionalTextEdits")).toArray();
+        if (!additional.isEmpty()) {
+          QJsonObject ws;
+          ws.insert(QStringLiteral("changes"),
+                    QJsonObject{{uri, additional}});
+          (void)applyWorkspaceEdit(ws);
+        }
+      });
+}
+
+void MainWindow::showHover() {
+  if (!lsp_ || !lsp_->isReady() || !editor_) {
+    showToast(tr("Language server is not ready."));
+    return;
+  }
+
+  auto* plain = qobject_cast<QPlainTextEdit*>(editor_->currentEditorWidget());
+  const QString filePath = editor_->currentFilePath().trimmed();
+  if (!plain || filePath.isEmpty()) {
+    return;
+  }
+
+  const QTextCursor cursor = plain->textCursor();
+  const QTextBlock block = cursor.block();
+  const int line = qMax(0, block.blockNumber());
+  const int character = qMax(0, cursor.position() - block.position());
+
+  const QJsonObject params{
+      {QStringLiteral("textDocument"),
+       QJsonObject{{QStringLiteral("uri"), toFileUri(filePath)}}},
+      {QStringLiteral("position"),
+       QJsonObject{{QStringLiteral("line"), line},
+                   {QStringLiteral("character"), character}}},
+  };
+
+  lsp_->request(
+      QStringLiteral("textDocument/hover"), params,
+      [this, plain](const QJsonValue& result, const QJsonObject& error) {
+        if (!error.isEmpty() || !result.isObject()) {
+          showToast(tr("No hover information available."));
+          return;
+        }
+        const QJsonObject hoverObj = result.toObject();
+        const QString text =
+            hoverContentsToText(hoverObj.value(QStringLiteral("contents")))
+                .trimmed();
+        if (text.isEmpty()) {
+          showToast(tr("No hover information available."));
+          return;
+        }
+        const QString shown = text.size() > 1200 ? text.left(1200) : text;
+        QToolTip::showText(plain->mapToGlobal(plain->cursorRect().bottomRight()),
+                           shown, plain);
+      });
+}
+
+void MainWindow::goToDefinition() {
+  if (!lsp_ || !lsp_->isReady() || !editor_) {
+    showToast(tr("Language server is not ready."));
+    return;
+  }
+
+  auto* plain = qobject_cast<QPlainTextEdit*>(editor_->currentEditorWidget());
+  const QString filePath = editor_->currentFilePath().trimmed();
+  if (!plain || filePath.isEmpty()) {
+    return;
+  }
+
+  const QTextCursor cursor = plain->textCursor();
+  const QTextBlock block = cursor.block();
+  const int line = qMax(0, block.blockNumber());
+  const int character = qMax(0, cursor.position() - block.position());
+
+  const QJsonObject params{
+      {QStringLiteral("textDocument"),
+       QJsonObject{{QStringLiteral("uri"), toFileUri(filePath)}}},
+      {QStringLiteral("position"),
+       QJsonObject{{QStringLiteral("line"), line},
+                   {QStringLiteral("character"), character}}},
+  };
+
+  lsp_->request(
+      QStringLiteral("textDocument/definition"), params,
+      [this](const QJsonValue& result, const QJsonObject& error) {
+        if (!editor_ || !error.isEmpty()) {
+          showToast(tr("Definition lookup failed."));
+          return;
+        }
+
+        auto parseLocation = [](const QJsonObject& obj, QString* outPath,
+                                int* outLine, int* outColumn) {
+          if (!outPath || !outLine || !outColumn) {
+            return false;
+          }
+          QString uri = obj.value(QStringLiteral("uri")).toString().trimmed();
+          if (uri.isEmpty()) {
+            uri = obj.value(QStringLiteral("targetUri")).toString().trimmed();
+          }
+          QJsonObject range = obj.value(QStringLiteral("range")).toObject();
+          if (range.isEmpty()) {
+            range = obj.value(QStringLiteral("targetSelectionRange")).toObject();
+          }
+          if (range.isEmpty()) {
+            range = obj.value(QStringLiteral("targetRange")).toObject();
+          }
+          const QJsonObject start = range.value(QStringLiteral("start")).toObject();
+          const QString path = pathFromUriOrPath(uri);
+          if (path.isEmpty() || start.isEmpty()) {
+            return false;
+          }
+          *outPath = path;
+          *outLine = start.value(QStringLiteral("line")).toInt() + 1;
+          *outColumn = start.value(QStringLiteral("character")).toInt() + 1;
+          return true;
+        };
+
+        QJsonObject locationObj;
+        if (result.isArray()) {
+          const QJsonArray arr = result.toArray();
+          if (!arr.isEmpty() && arr.first().isObject()) {
+            locationObj = arr.first().toObject();
+          }
+        } else if (result.isObject()) {
+          locationObj = result.toObject();
+        }
+
+        QString targetPath;
+        int targetLine = 0;
+        int targetColumn = 0;
+        if (!parseLocation(locationObj, &targetPath, &targetLine, &targetColumn)) {
+          showToast(tr("Definition not found."));
+          return;
+        }
+
+        if (!editor_->openLocation(targetPath, targetLine, targetColumn)) {
+          showToast(tr("Could not open definition location."));
+        }
+      });
+}
+
+void MainWindow::findReferences() {
+  if (!lsp_ || !lsp_->isReady() || !editor_) {
+    showToast(tr("Language server is not ready."));
+    return;
+  }
+
+  auto* plain = qobject_cast<QPlainTextEdit*>(editor_->currentEditorWidget());
+  const QString filePath = editor_->currentFilePath().trimmed();
+  if (!plain || filePath.isEmpty()) {
+    return;
+  }
+
+  const QTextCursor cursor = plain->textCursor();
+  const QTextBlock block = cursor.block();
+  const int line = qMax(0, block.blockNumber());
+  const int character = qMax(0, cursor.position() - block.position());
+
+  const QJsonObject params{
+      {QStringLiteral("textDocument"),
+       QJsonObject{{QStringLiteral("uri"), toFileUri(filePath)}}},
+      {QStringLiteral("position"),
+       QJsonObject{{QStringLiteral("line"), line},
+                   {QStringLiteral("character"), character}}},
+      {QStringLiteral("context"),
+       QJsonObject{{QStringLiteral("includeDeclaration"), true}}},
+  };
+
+  lsp_->request(
+      QStringLiteral("textDocument/references"), params,
+      [this](const QJsonValue& result, const QJsonObject& error) {
+        if (!editor_ || !error.isEmpty() || !result.isArray()) {
+          showToast(tr("No references found."));
+          return;
+        }
+        const QJsonArray refs = result.toArray();
+        if (refs.isEmpty()) {
+          showToast(tr("No references found."));
+          return;
+        }
+
+        auto* dialog = new QuickPickDialog(this);
+        dialog->setPlaceholderText(tr("Select reference..."));
+
+        QVector<QuickPickDialog::Item> items;
+        items.reserve(qMin(500, refs.size()));
+        for (const QJsonValue& value : refs) {
+          if (!value.isObject()) {
+            continue;
+          }
+          const QJsonObject location = value.toObject();
+          const QString path = pathFromUriOrPath(
+              location.value(QStringLiteral("uri")).toString());
+          const QJsonObject range = location.value(QStringLiteral("range")).toObject();
+          const QJsonObject start = range.value(QStringLiteral("start")).toObject();
+          if (path.isEmpty() || start.isEmpty()) {
+            continue;
+          }
+
+          const int row = start.value(QStringLiteral("line")).toInt() + 1;
+          const int col = start.value(QStringLiteral("character")).toInt() + 1;
+
+          QuickPickDialog::Item item;
+          item.label = QFileInfo(path).fileName();
+          item.detail = QStringLiteral("%1:%2:%3").arg(path).arg(row).arg(col);
+          item.data = QVariantList{path, row, col};
+          items.push_back(item);
+          if (items.size() >= 500) {
+            break;
+          }
+        }
+
+        dialog->setItems(items);
+        if (dialog->exec() == QDialog::Accepted) {
+          const QVariantList picked = dialog->selectedData().toList();
+          if (picked.size() >= 3) {
+            (void)editor_->openLocation(picked[0].toString(), picked[1].toInt(),
+                                        picked[2].toInt());
+          }
+        }
+        dialog->deleteLater();
+      });
+}
+
+void MainWindow::renameSymbol() {
+  if (!lsp_ || !lsp_->isReady() || !editor_) {
+    showToast(tr("Language server is not ready."));
+    return;
+  }
+
+  auto* plain = qobject_cast<QPlainTextEdit*>(editor_->currentEditorWidget());
+  const QString filePath = editor_->currentFilePath().trimmed();
+  if (!plain || filePath.isEmpty()) {
+    return;
+  }
+
+  QTextCursor cursor = plain->textCursor();
+  QString oldName = cursor.selectedText().trimmed();
+  if (oldName.isEmpty()) {
+    QTextCursor word = cursor;
+    word.select(QTextCursor::WordUnderCursor);
+    oldName = word.selectedText().trimmed();
+  }
+
+  bool ok = false;
+  const QString newName = QInputDialog::getText(
+      this, tr("Rename Symbol"), tr("New symbol name:"),
+      QLineEdit::Normal, oldName, &ok).trimmed();
+  if (!ok || newName.isEmpty() || newName == oldName) {
+    return;
+  }
+
+  const QTextBlock block = cursor.block();
+  const int line = qMax(0, block.blockNumber());
+  const int character = qMax(0, cursor.position() - block.position());
+
+  const QJsonObject params{
+      {QStringLiteral("textDocument"),
+       QJsonObject{{QStringLiteral("uri"), toFileUri(filePath)}}},
+      {QStringLiteral("position"),
+       QJsonObject{{QStringLiteral("line"), line},
+                   {QStringLiteral("character"), character}}},
+      {QStringLiteral("newName"), newName},
+  };
+
+  lsp_->request(
+      QStringLiteral("textDocument/rename"), params,
+      [this](const QJsonValue& result, const QJsonObject& error) {
+        if (!error.isEmpty() || !result.isObject()) {
+          showToast(tr("Rename failed."));
+          return;
+        }
+        if (applyWorkspaceEdit(result.toObject())) {
+          showToast(tr("Rename applied."));
+        } else {
+          showToast(tr("Rename produced edits but could not be applied."));
+        }
+      });
+}
+
+void MainWindow::showCodeActions(QStringList onlyKinds) {
+  if (!lsp_ || !lsp_->isReady() || !editor_) {
+    showToast(tr("Language server is not ready."));
+    return;
+  }
+
+  auto* plain = qobject_cast<QPlainTextEdit*>(editor_->currentEditorWidget());
+  const QString filePath = editor_->currentFilePath().trimmed();
+  if (!plain || filePath.isEmpty()) {
+    return;
+  }
+
+  QTextCursor cursor = plain->textCursor();
+  int startPos = cursor.selectionStart();
+  int endPos = cursor.selectionEnd();
+  if (!cursor.hasSelection()) {
+    startPos = cursor.position();
+    endPos = cursor.position();
+  }
+
+  auto lineCharAt = [plain](int pos) {
+    const QTextDocument* doc = plain->document();
+    const QTextBlock block = doc->findBlock(pos);
+    const int line = block.isValid() ? block.blockNumber() : 0;
+    const int character =
+        block.isValid() ? qMax(0, pos - block.position()) : 0;
+    return QPair<int, int>(line, character);
+  };
+  const QPair<int, int> start = lineCharAt(startPos);
+  const QPair<int, int> end = lineCharAt(endPos);
+
+  const QString normalizedPath = QFileInfo(filePath).absoluteFilePath();
+  QJsonObject context{
+      {QStringLiteral("diagnostics"),
+       lspDiagnosticsByFilePath_.value(normalizedPath)},
+  };
+  onlyKinds.removeAll(QString{});
+  if (!onlyKinds.isEmpty()) {
+    QJsonArray only;
+    for (const QString& kind : onlyKinds) {
+      only.push_back(kind);
+    }
+    context.insert(QStringLiteral("only"), only);
+  }
+
+  const QJsonObject params{
+      {QStringLiteral("textDocument"),
+       QJsonObject{{QStringLiteral("uri"), toFileUri(filePath)}}},
+      {QStringLiteral("range"),
+       QJsonObject{
+           {QStringLiteral("start"),
+            QJsonObject{{QStringLiteral("line"), start.first},
+                        {QStringLiteral("character"), start.second}}},
+           {QStringLiteral("end"),
+            QJsonObject{{QStringLiteral("line"), end.first},
+                        {QStringLiteral("character"), end.second}}},
+       }},
+      {QStringLiteral("context"), context},
+  };
+
+  lsp_->request(
+      QStringLiteral("textDocument/codeAction"), params,
+      [this](const QJsonValue& result, const QJsonObject& error) {
+        if (!lsp_ || !error.isEmpty() || !result.isArray()) {
+          showToast(tr("No code actions available."));
+          return;
+        }
+        const QJsonArray actions = result.toArray();
+        if (actions.isEmpty()) {
+          showToast(tr("No code actions available."));
+          return;
+        }
+
+        auto* dialog = new QuickPickDialog(this);
+        dialog->setPlaceholderText(tr("Select code action..."));
+        QVector<QuickPickDialog::Item> items;
+        items.reserve(actions.size());
+        for (const QJsonValue& value : actions) {
+          if (!value.isObject()) {
+            continue;
+          }
+          const QJsonObject action = value.toObject();
+          QString title = action.value(QStringLiteral("title")).toString().trimmed();
+          if (title.isEmpty()) {
+            const QJsonObject cmd = action.value(QStringLiteral("command")).toObject();
+            title = cmd.value(QStringLiteral("title")).toString().trimmed();
+          }
+          if (title.isEmpty()) {
+            title = tr("Unnamed action");
+          }
+
+          QuickPickDialog::Item item;
+          item.label = title;
+          item.detail = action.value(QStringLiteral("kind")).toString().trimmed();
+          item.data = action;
+          items.push_back(item);
+        }
+
+        dialog->setItems(items);
+        if (dialog->exec() != QDialog::Accepted) {
+          dialog->deleteLater();
+          return;
+        }
+        const QJsonObject actionObj = dialog->selectedData().toJsonObject();
+        dialog->deleteLater();
+        if (actionObj.isEmpty()) {
+          return;
+        }
+
+        const LspCodeActionExecution execution =
+            lspPlanCodeActionExecution(actionObj);
+        if (!execution.workspaceEdit.isEmpty() &&
+            !applyWorkspaceEdit(execution.workspaceEdit)) {
+          showToast(tr("Failed to apply code action edits."));
+          return;
+        }
+
+        if (!execution.executeCommandParams.isEmpty()) {
+          lsp_->request(
+              QStringLiteral("workspace/executeCommand"),
+              execution.executeCommandParams,
+              [this](const QJsonValue& commandResult, const QJsonObject& commandError) {
+                if (!commandError.isEmpty()) {
+                  showToast(tr("Code action command failed."));
+                  return;
+                }
+                if (commandResult.isObject()) {
+                  const QJsonObject resultObj = commandResult.toObject();
+                  if (resultObj.contains(QStringLiteral("changes")) ||
+                      resultObj.contains(QStringLiteral("documentChanges"))) {
+                    (void)applyWorkspaceEdit(resultObj);
+                  }
+                }
+                showToast(tr("Code action applied."));
+              });
+          return;
+        }
+
+        showToast(tr("Code action applied."));
+      });
+}
+
+void MainWindow::formatDocument() {
+  if (!lsp_ || !lsp_->isReady() || !editor_) {
+    showToast(tr("Language server is not ready."));
+    return;
+  }
+
+  const QString filePath = editor_->currentFilePath().trimmed();
+  if (filePath.isEmpty()) {
+    return;
+  }
+
+  const QJsonObject params{
+      {QStringLiteral("textDocument"),
+       QJsonObject{{QStringLiteral("uri"), toFileUri(filePath)}}},
+      {QStringLiteral("options"),
+       QJsonObject{{QStringLiteral("tabSize"), editor_->tabSize()},
+                   {QStringLiteral("insertSpaces"), editor_->insertSpaces()}}},
+  };
+
+  lsp_->request(
+      QStringLiteral("textDocument/formatting"), params,
+      [this, filePath](const QJsonValue& result, const QJsonObject& error) {
+        if (!error.isEmpty() || !result.isArray()) {
+          showToast(tr("Formatting failed."));
+          return;
+        }
+        const QJsonArray edits = result.toArray();
+        if (edits.isEmpty()) {
+          showToast(tr("No formatting changes needed."));
+          return;
+        }
+
+        QJsonObject workspaceEdit;
+        workspaceEdit.insert(
+            QStringLiteral("changes"),
+            QJsonObject{{toFileUri(filePath), edits}});
+        if (applyWorkspaceEdit(workspaceEdit)) {
+          showToast(tr("Document formatted."));
+        } else {
+          showToast(tr("Failed to apply formatting edits."));
+        }
+      });
+}
+
+bool MainWindow::applyWorkspaceEdit(const QJsonObject& workspaceEdit) {
+  if (workspaceEdit.isEmpty()) {
+    return true;
+  }
+
+  auto applyEditsToDocument = [](QTextDocument* doc, const QJsonArray& edits,
+                                 QString* outError) {
+    if (!doc) {
+      if (outError) {
+        *outError = QStringLiteral("Missing document.");
+      }
+      return false;
+    }
+
+    struct ResolvedEdit final {
+      int start = 0;
+      int end = 0;
+      QString newText;
+    };
+
+    QVector<ResolvedEdit> resolved;
+    resolved.reserve(edits.size());
+    for (const QJsonValue& value : edits) {
+      if (!value.isObject()) {
+        continue;
+      }
+      const QJsonObject editObj = value.toObject();
+      QJsonObject rangeObj = editObj.value(QStringLiteral("range")).toObject();
+      if (rangeObj.isEmpty()) {
+        rangeObj = editObj.value(QStringLiteral("replace")).toObject();
+      }
+      if (rangeObj.isEmpty()) {
+        rangeObj = editObj.value(QStringLiteral("insert")).toObject();
+      }
+      if (rangeObj.isEmpty()) {
+        if (outError) {
+          *outError = QStringLiteral("Invalid text edit range.");
+        }
+        return false;
+      }
+
+      int startPos = 0;
+      int endPos = 0;
+      if (!lspRangeToDocumentOffsets(doc, rangeObj, &startPos, &endPos)) {
+        if (outError) {
+          *outError = QStringLiteral("Could not resolve text edit range.");
+        }
+        return false;
+      }
+      ResolvedEdit edit;
+      edit.start = startPos;
+      edit.end = endPos;
+      edit.newText = editObj.value(QStringLiteral("newText")).toString();
+      resolved.push_back(edit);
+    }
+
+    std::sort(resolved.begin(), resolved.end(),
+              [](const ResolvedEdit& a, const ResolvedEdit& b) {
+                if (a.start != b.start) {
+                  return a.start > b.start;
+                }
+                return a.end > b.end;
+              });
+
+    QTextCursor cursor(doc);
+    cursor.beginEditBlock();
+    for (const ResolvedEdit& edit : resolved) {
+      cursor.setPosition(edit.start);
+      cursor.setPosition(edit.end, QTextCursor::KeepAnchor);
+      cursor.insertText(edit.newText);
+    }
+    cursor.endEditBlock();
+    return true;
+  };
+
+  auto applyEditsToPath = [this, &applyEditsToDocument](const QString& filePath,
+                                                        const QJsonArray& edits,
+                                                        QString* outError) {
+    if (filePath.trimmed().isEmpty()) {
+      if (outError) {
+        *outError = QStringLiteral("Workspace edit path is empty.");
+      }
+      return false;
+    }
+
+    const QString absPath = QFileInfo(filePath).absoluteFilePath();
+    if (editor_) {
+      if (auto* openEditor = qobject_cast<QPlainTextEdit*>(
+              editor_->editorWidgetForFile(absPath))) {
+        return applyEditsToDocument(openEditor->document(), edits, outError);
+      }
+    }
+
+    QString text;
+    QFile in(absPath);
+    if (in.exists()) {
+      if (!in.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        if (outError) {
+          *outError = QStringLiteral("Could not open %1 for reading.").arg(absPath);
+        }
+        return false;
+      }
+      text = QString::fromUtf8(in.readAll());
+      in.close();
+    }
+
+    QTextDocument doc;
+    doc.setPlainText(text);
+    if (!applyEditsToDocument(&doc, edits, outError)) {
+      return false;
+    }
+
+    QDir().mkpath(QFileInfo(absPath).absolutePath());
+    QSaveFile out(absPath);
+    if (!out.open(QIODevice::WriteOnly | QIODevice::Text)) {
+      if (outError) {
+        *outError = QStringLiteral("Could not open %1 for writing.").arg(absPath);
+      }
+      return false;
+    }
+    const QByteArray bytes = doc.toPlainText().toUtf8();
+    if (out.write(bytes) != bytes.size() || !out.commit()) {
+      if (outError) {
+        *outError = QStringLiteral("Failed writing %1.").arg(absPath);
+      }
+      return false;
+    }
+    return true;
+  };
+
+  QString error;
+  bool touched = false;
+
+  auto applyChangesObject = [&](const QJsonObject& changesObj) {
+    const QStringList keys = changesObj.keys();
+    for (const QString& key : keys) {
+      const QString path = pathFromUriOrPath(key);
+      const QJsonArray edits = changesObj.value(key).toArray();
+      if (!applyEditsToPath(path, edits, &error)) {
+        return false;
+      }
+      touched = true;
+    }
+    return true;
+  };
+
+  if (workspaceEdit.contains(QStringLiteral("changes"))) {
+    if (!applyChangesObject(
+            workspaceEdit.value(QStringLiteral("changes")).toObject())) {
+      if (output_) {
+        output_->appendLine(tr("[LSP] Workspace edit failed: %1").arg(error));
+      }
+      return false;
+    }
+  }
+
+  if (workspaceEdit.contains(QStringLiteral("documentChanges"))) {
+    const QJsonArray docChanges =
+        workspaceEdit.value(QStringLiteral("documentChanges")).toArray();
+    for (const QJsonValue& value : docChanges) {
+      if (!value.isObject()) {
+        continue;
+      }
+      const QJsonObject entry = value.toObject();
+
+      const QString kind = entry.value(QStringLiteral("kind")).toString();
+      if (kind == QStringLiteral("create")) {
+        const QString path = pathFromUriOrPath(
+            entry.value(QStringLiteral("uri")).toString());
+        if (!path.trimmed().isEmpty()) {
+          QDir().mkpath(QFileInfo(path).absolutePath());
+          if (!QFileInfo::exists(path)) {
+            QFile f(path);
+            if (f.open(QIODevice::WriteOnly)) {
+              f.close();
+              touched = true;
+            }
+          }
+        }
+        continue;
+      }
+      if (kind == QStringLiteral("rename")) {
+        const QString oldPath = pathFromUriOrPath(
+            entry.value(QStringLiteral("oldUri")).toString());
+        const QString newPath = pathFromUriOrPath(
+            entry.value(QStringLiteral("newUri")).toString());
+        if (!oldPath.isEmpty() && !newPath.isEmpty() && oldPath != newPath) {
+          QDir().mkpath(QFileInfo(newPath).absolutePath());
+          if (QFile::exists(oldPath) && QFile::rename(oldPath, newPath)) {
+            touched = true;
+          }
+        }
+        continue;
+      }
+      if (kind == QStringLiteral("delete")) {
+        const QString path = pathFromUriOrPath(
+            entry.value(QStringLiteral("uri")).toString());
+        if (!path.isEmpty() && QFile::exists(path) && QFile::remove(path)) {
+          touched = true;
+        }
+        continue;
+      }
+
+      const QJsonObject docObj = entry.value(QStringLiteral("textDocument")).toObject();
+      const QString path =
+          pathFromUriOrPath(docObj.value(QStringLiteral("uri")).toString());
+      const QJsonArray edits = entry.value(QStringLiteral("edits")).toArray();
+      if (!applyEditsToPath(path, edits, &error)) {
+        if (output_) {
+          output_->appendLine(tr("[LSP] Workspace edit failed: %1").arg(error));
+        }
+        return false;
+      }
+      touched = true;
+    }
+  }
+
+  if (touched) {
+    scheduleOutlineRefresh();
+  }
+  return true;
 }
 
 // === Sketch Menu Actions ===
@@ -9295,9 +12575,13 @@ void MainWindow::archiveSketch() {
 
   if (!zipPath.isEmpty()) {
     // Create zip archive
-    if (!createZipArchive(sketchDir, zipPath)) {
+    QString archiveError;
+    if (!createZipArchive(sketchDir, zipPath, &archiveError)) {
       QMessageBox::warning(this, tr("Archive Failed"),
-                           tr("Could not create zip archive.\n\nPlease ensure the `zip` command is installed."));
+                           tr("Could not create zip archive.\n\n%1")
+                               .arg(archiveError.trimmed().isEmpty()
+                                        ? tr("No compatible archive tool found.")
+                                        : archiveError.trimmed()));
     } else {
       QMessageBox::information(this, tr("Archive Complete"),
                                tr("Sketch archived to: %1").arg(zipPath));
@@ -9448,29 +12732,166 @@ void MainWindow::stopDebugging() {
 }
 
 // === Helper Functions ===
-bool MainWindow::createZipArchive(const QString& sourceDir, const QString& zipPath) {
+bool MainWindow::createZipArchive(const QString& sourceDir,
+                                  const QString& zipPath,
+                                  QString* outError,
+                                  std::function<void(const QString& status)>
+                                      progressCallback) {
   const QFileInfo sourceInfo(sourceDir);
   if (!sourceInfo.exists() || !sourceInfo.isDir()) {
+    if (outError) {
+      *outError = tr("Source folder does not exist.");
+    }
     return false;
   }
   const QFileInfo targetInfo(zipPath);
   if (targetInfo.absolutePath().trimmed().isEmpty()) {
+    if (outError) {
+      *outError = tr("Destination path is invalid.");
+    }
     return false;
   }
-  QDir().mkpath(targetInfo.absolutePath());
-  QFile::remove(zipPath);
+  if (!QDir().mkpath(targetInfo.absolutePath())) {
+    if (outError) {
+      *outError = tr("Could not create destination folder.");
+    }
+    return false;
+  }
+  (void)QFile::remove(zipPath);
 
-  QProcess zipProcess(this);
-  zipProcess.setWorkingDirectory(sourceInfo.absoluteDir().absolutePath());
-  zipProcess.start("zip", {"-rq", zipPath, sourceInfo.fileName()});
-  if (!zipProcess.waitForStarted(1000)) {
-    return false;
+  const QString workingDir = sourceInfo.absoluteDir().absolutePath();
+  const QString sourceName = sourceInfo.fileName();
+  const int timeoutMs = 3600000;  // allow large project bundles
+
+  struct Attempt final {
+    QString program;
+    QStringList args;
+    QString label;
+  };
+  QVector<Attempt> attempts;
+
+  const QString zipExe = QStandardPaths::findExecutable(QStringLiteral("zip"));
+  if (!zipExe.isEmpty()) {
+    attempts.push_back(
+        {zipExe, {QStringLiteral("-rq"), zipPath, sourceName}, QStringLiteral("zip")});
   }
-  if (!zipProcess.waitForFinished(30000)) {
-    zipProcess.kill();
-    return false;
+
+  const QString bsdtarExe =
+      QStandardPaths::findExecutable(QStringLiteral("bsdtar"));
+  if (!bsdtarExe.isEmpty()) {
+    attempts.push_back({bsdtarExe,
+                        {QStringLiteral("-a"), QStringLiteral("-cf"), zipPath, sourceName},
+                        QStringLiteral("bsdtar")});
   }
-  return zipProcess.exitCode() == 0 && QFileInfo::exists(zipPath);
+
+  const QString sevenZipExe = QStandardPaths::findExecutable(QStringLiteral("7z"));
+  if (!sevenZipExe.isEmpty()) {
+    attempts.push_back({sevenZipExe,
+                        {QStringLiteral("a"), QStringLiteral("-tzip"),
+                         QStringLiteral("-mx=9"), QStringLiteral("-y"), zipPath,
+                         sourceName},
+                        QStringLiteral("7z")});
+  }
+
+  const QString pythonExe =
+      QStandardPaths::findExecutable(QStringLiteral("python3"));
+  if (!pythonExe.isEmpty()) {
+    const QString script = QStringLiteral(
+        "import os,sys,zipfile\n"
+        "out_path=sys.argv[1]\n"
+        "src_dir=os.path.abspath(sys.argv[2])\n"
+        "base=os.path.dirname(src_dir)\n"
+        "with zipfile.ZipFile(out_path,'w',compression=zipfile.ZIP_DEFLATED,allowZip64=True) as zf:\n"
+        "  for root,dirs,files in os.walk(src_dir):\n"
+        "    for name in files:\n"
+        "      p=os.path.join(root,name)\n"
+        "      arc=os.path.relpath(p,base)\n"
+        "      zf.write(p,arc)\n");
+    attempts.push_back({pythonExe,
+                        {QStringLiteral("-c"), script, zipPath, sourceName},
+                        QStringLiteral("python3")});
+  }
+
+  QStringList errors;
+  for (const Attempt& attempt : attempts) {
+    CommandResult result;
+    QProcess process(this);
+    process.setWorkingDirectory(workingDir);
+    process.start(attempt.program, attempt.args);
+
+    if (!process.waitForStarted(5000)) {
+      result.stderrText = tr("Failed to start archiver tool.");
+      errors << QStringLiteral("%1: %2")
+                    .arg(attempt.label, commandErrorSummary(result));
+      (void)QFile::remove(zipPath);
+      continue;
+    }
+    result.started = true;
+
+    if (progressCallback) {
+      progressCallback(tr("Creating ZIP with %1...").arg(attempt.label));
+    }
+
+    QElapsedTimer elapsed;
+    elapsed.start();
+    QByteArray stdoutData;
+    QByteArray stderrData;
+    while (process.state() != QProcess::NotRunning) {
+      (void)process.waitForFinished(250);
+      stdoutData.append(process.readAllStandardOutput());
+      stderrData.append(process.readAllStandardError());
+
+      if (elapsed.elapsed() > timeoutMs) {
+        result.timedOut = true;
+        process.kill();
+        process.waitForFinished(1500);
+        break;
+      }
+
+      if (progressCallback) {
+        const qint64 archiveSize = QFileInfo(zipPath).isFile()
+                                       ? QFileInfo(zipPath).size()
+                                       : 0;
+        progressCallback(
+            tr("Creating ZIP with %1... %2 written (%3 elapsed)")
+                .arg(attempt.label,
+                     formatByteSize(archiveSize),
+                     formatElapsedTimeMs(elapsed.elapsed())));
+      }
+    }
+
+    stdoutData.append(process.readAllStandardOutput());
+    stderrData.append(process.readAllStandardError());
+    result.exitStatus = process.exitStatus();
+    result.exitCode = process.exitCode();
+    result.stdoutText = QString::fromUtf8(stdoutData);
+    result.stderrText = QString::fromUtf8(stderrData);
+
+    if (commandSucceeded(result) && QFileInfo::exists(zipPath)) {
+      if (progressCallback) {
+        progressCallback(
+            tr("ZIP created using %1 (%2).")
+                .arg(attempt.label, formatByteSize(QFileInfo(zipPath).size())));
+      }
+      if (outError) {
+        outError->clear();
+      }
+      return true;
+    }
+    errors << QStringLiteral("%1: %2")
+                  .arg(attempt.label, commandErrorSummary(result));
+    (void)QFile::remove(zipPath);
+  }
+
+  if (outError) {
+    if (errors.isEmpty()) {
+      *outError = tr("No compatible archive tool found. Install `zip`, `bsdtar`, `7z`, or `python3`.");
+    } else {
+      *outError = tr("Archive creation failed.\n%1")
+                      .arg(errors.join(QStringLiteral("\n")));
+    }
+  }
+  return false;
 }
 
 void MainWindow::showToast(const QString& message, int timeoutMs) {
@@ -9518,6 +12939,32 @@ void MainWindow::showToastWithAction(const QString& message,
   if (toast_) {
     toast_->showToast(trimmed, actionText, action, timeoutMs);
   }
+}
+
+void MainWindow::focusOutputDock() {
+  if (!outputDock_) {
+    return;
+  }
+  outputDock_->show();
+  outputDock_->raise();
+}
+
+void MainWindow::focusBoardsManagerSearch(const QString& query) {
+  if (!boardsManagerDock_ || !boardsManager_) {
+    return;
+  }
+  boardsManagerDock_->show();
+  boardsManagerDock_->raise();
+  boardsManager_->showSearchFor(query);
+}
+
+void MainWindow::focusLibraryManagerSearch(const QString& query) {
+  if (!libraryManagerDock_ || !libraryManager_) {
+    return;
+  }
+  libraryManagerDock_->show();
+  libraryManagerDock_->raise();
+  libraryManager_->showSearchFor(query);
 }
 
 // === Sketch and Recent Files Management ===

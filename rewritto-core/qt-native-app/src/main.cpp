@@ -20,7 +20,7 @@
 #include <QtGlobal>
 
 #ifndef REWRITTO_IDE_VERSION
-#define REWRITTO_IDE_VERSION "0.4.0"
+#define REWRITTO_IDE_VERSION "0.4.4"
 #endif
 
 namespace {

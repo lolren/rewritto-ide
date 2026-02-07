@@ -200,6 +200,8 @@ class MainWindow final : public QMainWindow {
   QAction* actionSaveAs_ = nullptr;
   QAction* actionSaveCopyAs_ = nullptr;
   QAction* actionSaveAll_ = nullptr;
+  QAction* actionExportProjectZip_ = nullptr;
+  QAction* actionImportProjectZip_ = nullptr;
   QAction* actionExamples_ = nullptr;
   QAction* actionPreferences_ = nullptr;
   QAction* actionPinSketch_ = nullptr;
@@ -505,6 +507,8 @@ class MainWindow final : public QMainWindow {
   void newSketch();
   void openSketch();
   void openSketchFolder();
+  void exportProjectZip();
+  void importProjectZip();
 
   // Sketch menu actions
   void verifySketch();
@@ -571,7 +575,10 @@ class MainWindow final : public QMainWindow {
   static QString findExecutable(const QString& name);
 
   // Helper functions
-  bool createZipArchive(const QString& sourceDir, const QString& zipPath);
+  bool createZipArchive(const QString& sourceDir,
+                        const QString& zipPath,
+                        QString* outError = nullptr,
+                        std::function<void(const QString& status)> progressCallback = {});
 
   void requestCompletion();
   void showHover();
@@ -649,6 +656,7 @@ class MainWindow final : public QMainWindow {
 
   bool cliCancelRequested_ = false;
   bool pendingUploadCancelled_ = false;
+  bool lspUnavailableNoticeShown_ = false;
 
   QSet<QString> lastDetectedPorts_;
   QSet<QString> favoriteFqbns_;
