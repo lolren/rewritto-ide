@@ -1572,6 +1572,8 @@ void MainWindow::createMenus() {
   sketchMenu->addAction(actionShowSketchFolder_);
   sketchMenu->addSeparator();
   includeLibraryMenu_ = sketchMenu->addMenu(tr("Include Library"));
+  connect(includeLibraryMenu_, &QMenu::aboutToShow, this,
+          &MainWindow::rebuildIncludeLibraryMenu);
 
   toolsMenu_ = menuBar()->addMenu(tr("&Tools"));
   // Group 0: Main
@@ -2797,6 +2799,10 @@ void MainWindow::wireSignals() {
   if (libraryManager_) {
     connect(libraryManager_, &LibraryManagerDialog::librariesChanged, this,
             [this] { clearIncludeLibraryMenuActions(); });
+    connect(libraryManager_, &LibraryManagerDialog::includeLibraryRequested, this,
+            &MainWindow::insertLibraryIncludes);
+    connect(libraryManager_, &LibraryManagerDialog::openLibraryExamplesRequested, this,
+            [this](const QString& libraryName) { showExamplesDialog(libraryName); });
     connect(libraryManager_, &LibraryManagerDialog::busyChanged, this,
             [this](bool) { updateStopActionState(); });
   }
@@ -4550,8 +4556,288 @@ void MainWindow::clearBoardOptionMenus() {
 }
 
 void MainWindow::clearIncludeLibraryMenuActions() {
+  if (includeLibraryProcess_) {
+    includeLibraryProcess_->kill();
+    includeLibraryProcess_->deleteLater();
+    includeLibraryProcess_ = nullptr;
+  }
   for (QAction* a : includeLibraryMenuActions_) a->deleteLater();
   includeLibraryMenuActions_.clear();
+}
+
+void MainWindow::rebuildIncludeLibraryMenu() {
+  if (!includeLibraryMenu_) {
+    return;
+  }
+
+  clearIncludeLibraryMenuActions();
+
+  auto addDisabledItem = [this](const QString& text) {
+    if (!includeLibraryMenu_) {
+      return;
+    }
+    QAction* action = includeLibraryMenu_->addAction(text);
+    action->setEnabled(false);
+    includeLibraryMenuActions_.push_back(action);
+  };
+
+  if (!arduinoCli_ || arduinoCli_->arduinoCliPath().trimmed().isEmpty()) {
+    addDisabledItem(tr("Arduino CLI unavailable"));
+    return;
+  }
+
+  QAction* loading = includeLibraryMenu_->addAction(
+      tr("Loading installed libraries..."));
+  loading->setEnabled(false);
+  includeLibraryMenuActions_.push_back(loading);
+
+  QProcess* process = new QProcess(this);
+  process->setProcessChannelMode(QProcess::SeparateChannels);
+  includeLibraryProcess_ = process;
+
+  connect(process,
+          QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+          this,
+          [this, process, addDisabledItem](int exitCode, QProcess::ExitStatus) {
+            if (includeLibraryProcess_ == process) {
+              includeLibraryProcess_ = nullptr;
+            }
+
+            const QByteArray out = process->readAllStandardOutput();
+            const QByteArray err = process->readAllStandardError();
+            process->deleteLater();
+
+            clearIncludeLibraryMenuActions();
+            if (!includeLibraryMenu_) {
+              return;
+            }
+
+            if (exitCode != 0) {
+              if (output_ && !err.trimmed().isEmpty()) {
+                output_->appendLine(tr("[Include Library] %1")
+                                        .arg(QString::fromUtf8(err).trimmed()));
+              }
+              addDisabledItem(tr("Failed to load installed libraries"));
+              return;
+            }
+
+            const QJsonDocument doc = QJsonDocument::fromJson(out);
+            if (!doc.isObject()) {
+              addDisabledItem(tr("Failed to parse installed libraries"));
+              return;
+            }
+
+            struct LibraryEntry final {
+              QString name;
+              QStringList includes;
+            };
+
+            QVector<LibraryEntry> entries;
+            const QJsonArray installed =
+                doc.object().value("installed_libraries").toArray();
+            entries.reserve(installed.size());
+
+            for (const QJsonValue& value : installed) {
+              const QJsonObject lib =
+                  value.toObject().value("library").toObject();
+              const QString name = lib.value("name").toString().trimmed();
+              if (name.isEmpty()) {
+                continue;
+              }
+
+              QStringList includes;
+              for (const QJsonValue& includeValue :
+                   lib.value("provides_includes").toArray()) {
+                const QString include = includeValue.toString().trimmed();
+                if (!include.isEmpty()) {
+                  includes << include;
+                }
+              }
+              includes.removeDuplicates();
+
+              entries.push_back({name, includes});
+            }
+
+            std::sort(entries.begin(),
+                      entries.end(),
+                      [](const LibraryEntry& left, const LibraryEntry& right) {
+                        return QString::localeAwareCompare(left.name, right.name) < 0;
+                      });
+
+            bool addedAny = false;
+            for (const LibraryEntry& entry : entries) {
+              QAction* action = includeLibraryMenu_->addAction(entry.name);
+              includeLibraryMenuActions_.push_back(action);
+              if (entry.includes.isEmpty()) {
+                action->setEnabled(false);
+                action->setToolTip(
+                    tr("This library does not advertise include files."));
+                continue;
+              }
+              addedAny = true;
+              connect(action, &QAction::triggered, this, [this, entry] {
+                insertLibraryIncludes(entry.name, entry.includes);
+              });
+            }
+
+            if (!addedAny) {
+              addDisabledItem(tr("No includable installed libraries"));
+            }
+
+            if (actionManageLibraries_) {
+              QAction* separator = includeLibraryMenu_->addSeparator();
+              includeLibraryMenuActions_.push_back(separator);
+              QAction* manage = includeLibraryMenu_->addAction(
+                  tr("Manage Libraries..."));
+              includeLibraryMenuActions_.push_back(manage);
+              connect(manage, &QAction::triggered, this, [this] {
+                actionManageLibraries_->trigger();
+              });
+            }
+          });
+
+  connect(process, &QProcess::errorOccurred, this, [this, process](QProcess::ProcessError) {
+    if (includeLibraryProcess_ == process) {
+      includeLibraryProcess_ = nullptr;
+    }
+    process->deleteLater();
+    clearIncludeLibraryMenuActions();
+    if (includeLibraryMenu_) {
+      QAction* failed = includeLibraryMenu_->addAction(
+          tr("Could not start Arduino CLI"));
+      failed->setEnabled(false);
+      includeLibraryMenuActions_.push_back(failed);
+    }
+  });
+
+  const QStringList args = arduinoCli_->withGlobalFlags(
+      {QStringLiteral("lib"), QStringLiteral("list"), QStringLiteral("--json")});
+  process->start(arduinoCli_->arduinoCliPath(), args);
+}
+
+void MainWindow::insertLibraryIncludes(const QString& libraryName,
+                                       const QStringList& includes) {
+  if (!editor_) {
+    return;
+  }
+  auto* plain = qobject_cast<QPlainTextEdit*>(editor_->currentEditorWidget());
+  if (!plain || !plain->document()) {
+    showToast(tr("Open a sketch file first."));
+    return;
+  }
+
+  QStringList headers;
+  headers.reserve(includes.size());
+  for (QString include : includes) {
+    include = include.trimmed();
+    if (include.startsWith(QLatin1Char('<')) && include.endsWith(QLatin1Char('>'))) {
+      include = include.mid(1, include.size() - 2).trimmed();
+    } else if (include.startsWith(QLatin1Char('"')) &&
+               include.endsWith(QLatin1Char('"'))) {
+      include = include.mid(1, include.size() - 2).trimmed();
+    }
+    if (!include.isEmpty()) {
+      headers << include;
+    }
+  }
+  headers.removeDuplicates();
+
+  if (headers.isEmpty()) {
+    showToast(tr("Library \"%1\" does not provide include headers.")
+                  .arg(libraryName.trimmed().isEmpty()
+                           ? tr("(unknown)")
+                           : libraryName.trimmed()));
+    return;
+  }
+
+  QSet<QString> existingHeaders;
+  const QRegularExpression includeLineRe(
+      QStringLiteral("^\\s*#\\s*include\\s*[<\\\"]([^>\\\"]+)[>\\\"]\\s*$"));
+  const QStringList lines = plain->toPlainText().split(QLatin1Char('\n'));
+  for (const QString& line : lines) {
+    const QRegularExpressionMatch match = includeLineRe.match(line);
+    if (match.hasMatch()) {
+      existingHeaders.insert(match.captured(1).trimmed());
+    }
+  }
+
+  QStringList headersToInsert;
+  headersToInsert.reserve(headers.size());
+  for (const QString& header : headers) {
+    if (!existingHeaders.contains(header)) {
+      headersToInsert << header;
+    }
+  }
+
+  if (headersToInsert.isEmpty()) {
+    showToast(tr("Includes for %1 are already present.").arg(libraryName));
+    return;
+  }
+
+  QTextDocument* doc = plain->document();
+  QTextBlock block = doc->begin();
+  int insertPos = 0;
+  bool sawInclude = false;
+
+  while (block.isValid()) {
+    const QString trimmed = block.text().trimmed();
+    const bool isInclude = includeLineRe.match(block.text()).hasMatch();
+
+    if (!sawInclude) {
+      if (isInclude) {
+        sawInclude = true;
+        insertPos = block.position() + block.length();
+        block = block.next();
+        continue;
+      }
+      if (trimmed.isEmpty() || trimmed.startsWith(QStringLiteral("//")) ||
+          trimmed.startsWith(QStringLiteral("/*")) ||
+          trimmed.startsWith(QStringLiteral("*")) ||
+          trimmed.startsWith(QStringLiteral("*/"))) {
+        insertPos = block.position() + block.length();
+        block = block.next();
+        continue;
+      }
+      insertPos = block.position();
+      break;
+    }
+
+    if (isInclude || trimmed.isEmpty()) {
+      insertPos = block.position() + block.length();
+      block = block.next();
+      continue;
+    }
+    break;
+  }
+
+  const int maxPos = std::max(0, doc->characterCount() - 1);
+  insertPos = std::clamp(insertPos, 0, maxPos);
+
+  QStringList includeLines;
+  includeLines.reserve(headersToInsert.size());
+  for (const QString& header : headersToInsert) {
+    includeLines << QStringLiteral("#include <%1>").arg(header);
+  }
+  QString snippet = includeLines.join(QLatin1Char('\n'));
+  snippet += QLatin1Char('\n');
+
+  QTextCursor cursor(doc);
+  cursor.beginEditBlock();
+  cursor.setPosition(insertPos);
+  if (insertPos > 0) {
+    const QChar before = doc->characterAt(insertPos - 1);
+    if (before != QLatin1Char('\n') &&
+        before != QChar::ParagraphSeparator) {
+      cursor.insertText(QStringLiteral("\n"));
+    }
+  }
+  cursor.insertText(snippet);
+  cursor.endEditBlock();
+
+  plain->setFocus(Qt::OtherFocusReason);
+  showToast(tr("Inserted %1 include(s) from %2.")
+                .arg(headersToInsert.size())
+                .arg(libraryName));
 }
 
 void MainWindow::clearPendingUploadFlow() {
