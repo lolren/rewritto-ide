@@ -2346,7 +2346,7 @@ void MainWindow::createMenus() {
   // Group 1: Firmware Uploader
   toolsMenu_->addAction(actionWiFiFirmwareUpdater_);
   toolsMenu_->addAction(actionUploadSSL_);
-  QMenu* environmentMenu = toolsMenu_->addMenu(tr("Environment"));
+  QMenu* environmentMenu = toolsMenu_->addMenu(tr("Setup && Environment"));
   environmentMenu->addAction(actionExportSetupProfile_);
   environmentMenu->addAction(actionImportSetupProfile_);
   environmentMenu->addSeparator();
@@ -2641,8 +2641,30 @@ void MainWindow::createMenus() {
   });
 
   connect(actionSaveAs_, &QAction::triggered, this, [this] {
-    if (editor_) {
-      editor_->saveCurrentWithDialog();
+    if (!editor_) {
+      return;
+    }
+
+    QString initialPath = editor_->currentFilePath().trimmed();
+    if (initialPath.isEmpty()) {
+      QString baseDir = currentSketchFolderPath();
+      if (baseDir.isEmpty()) {
+        baseDir = defaultSketchbookDir();
+      }
+      if (QFileInfo(baseDir).isDir()) {
+        initialPath =
+            QDir(baseDir).absoluteFilePath(QStringLiteral("Untitled.ino"));
+      }
+    }
+
+    const QString chosen = QFileDialog::getSaveFileName(
+        this, tr("Save As"), initialPath,
+        tr("Rewritto Sketch (*.ino);;C/C++ Files (*.c *.cc *.cpp *.cxx *.h *.hh *.hpp *.hxx);;All Files (*)"));
+    if (chosen.trimmed().isEmpty()) {
+      return;
+    }
+    if (!editor_->saveAs(chosen)) {
+      QMessageBox::warning(this, tr("Save Failed"), tr("Could not save file."));
     }
   });
 
