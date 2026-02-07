@@ -266,6 +266,11 @@ class MainWindow final : public QMainWindow {
   QAction* actionArchiveSketch_ = nullptr;
   QAction* actionWiFiFirmwareUpdater_ = nullptr;
   QAction* actionUploadSSL_ = nullptr;
+  QAction* actionExportSetupProfile_ = nullptr;
+  QAction* actionImportSetupProfile_ = nullptr;
+  QAction* actionGenerateProjectLockfile_ = nullptr;
+  QAction* actionBootstrapProjectLockfile_ = nullptr;
+  QAction* actionEnvironmentDoctor_ = nullptr;
   QAction* actionProgrammerAVRISP_ = nullptr;
   QAction* actionProgrammerUSBasp_ = nullptr;
   QAction* actionProgrammerArduinoISP_ = nullptr;
@@ -518,6 +523,11 @@ class MainWindow final : public QMainWindow {
   void toggleSerialPlotter();
   void getBoardInfo();
   void burnBootloader();
+  void exportSetupProfile();
+  void importSetupProfile();
+  void generateProjectLockfile();
+  void bootstrapProjectLockfile();
+  void runEnvironmentDoctor();
   void autoFormatSketch();
   void archiveSketch();
   void showWiFiFirmwareUpdater();

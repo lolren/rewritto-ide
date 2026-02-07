@@ -1179,6 +1179,169 @@ QStringList parseAdditionalBoardsText(const QString& text) {
   return normalizeStringList(urls);
 }
 
+constexpr auto kSetupProfileFormat = "rewritto.setup.profile";
+constexpr auto kSetupProfileVersion = 1;
+constexpr auto kProjectLockFormat = "rewritto.lock";
+constexpr auto kProjectLockVersion = 1;
+
+struct InstalledCoreSnapshot final {
+  QString id;
+  QString installedVersion;
+  QString latestVersion;
+  QString name;
+};
+
+struct InstalledLibrarySnapshot final {
+  QString name;
+  QString version;
+  QString location;
+  QStringList providesIncludes;
+};
+
+bool commandSucceeded(const CommandResult& result) {
+  return result.started && !result.timedOut &&
+         result.exitStatus == QProcess::NormalExit && result.exitCode == 0;
+}
+
+QString normalizeIncludeToken(QString includeToken) {
+  includeToken = includeToken.trimmed();
+  if (includeToken.startsWith(QLatin1Char('<')) &&
+      includeToken.endsWith(QLatin1Char('>')) && includeToken.size() >= 2) {
+    includeToken = includeToken.mid(1, includeToken.size() - 2).trimmed();
+  } else if (includeToken.startsWith(QLatin1Char('"')) &&
+             includeToken.endsWith(QLatin1Char('"')) && includeToken.size() >= 2) {
+    includeToken = includeToken.mid(1, includeToken.size() - 2).trimmed();
+  }
+  return includeToken;
+}
+
+QSet<QString> parseIncludesFromSourceText(const QString& text) {
+  static const QRegularExpression includeLineRe(
+      QStringLiteral(R"(^\s*#\s*include\s*[<"]([^>"]+)[>"])"));
+  QSet<QString> out;
+  const QStringList lines = text.split(QLatin1Char('\n'));
+  for (const QString& line : lines) {
+    const QRegularExpressionMatch match = includeLineRe.match(line);
+    if (!match.hasMatch()) {
+      continue;
+    }
+    const QString header = normalizeIncludeToken(match.captured(1));
+    if (header.isEmpty()) {
+      continue;
+    }
+    out.insert(header);
+    out.insert(QFileInfo(header).fileName());
+  }
+  return out;
+}
+
+QSet<QString> collectSketchIncludeHeaders(const QString& sketchFolder) {
+  QSet<QString> headers;
+  if (sketchFolder.trimmed().isEmpty() || !QFileInfo(sketchFolder).isDir()) {
+    return headers;
+  }
+  const QStringList nameFilters = {QStringLiteral("*.ino"), QStringLiteral("*.pde"),
+                                   QStringLiteral("*.h"), QStringLiteral("*.hpp"),
+                                   QStringLiteral("*.c"), QStringLiteral("*.cc"),
+                                   QStringLiteral("*.cpp"), QStringLiteral("*.cxx")};
+  QDirIterator it(sketchFolder, nameFilters, QDir::Files,
+                  QDirIterator::Subdirectories);
+  while (it.hasNext()) {
+    const QString path = it.next();
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+      continue;
+    }
+    headers.unite(
+        parseIncludesFromSourceText(QString::fromUtf8(file.readAll())));
+  }
+  return headers;
+}
+
+QVector<InstalledCoreSnapshot> parseInstalledCoresFromJson(const QByteArray& jsonBytes) {
+  QVector<InstalledCoreSnapshot> out;
+  const QJsonDocument doc = QJsonDocument::fromJson(jsonBytes);
+  if (!doc.isObject()) {
+    return out;
+  }
+  const QJsonArray platforms = doc.object().value(QStringLiteral("platforms")).toArray();
+  out.reserve(platforms.size());
+  for (const QJsonValue& value : platforms) {
+    if (!value.isObject()) {
+      continue;
+    }
+    const QJsonObject platform = value.toObject();
+    InstalledCoreSnapshot core;
+    core.id = platform.value(QStringLiteral("id")).toString().trimmed();
+    core.installedVersion =
+        platform.value(QStringLiteral("installed_version")).toString().trimmed();
+    core.latestVersion =
+        platform.value(QStringLiteral("latest_version")).toString().trimmed();
+    const QJsonObject releases = platform.value(QStringLiteral("releases")).toObject();
+    if (!core.installedVersion.isEmpty()) {
+      core.name = releases.value(core.installedVersion)
+                      .toObject()
+                      .value(QStringLiteral("name"))
+                      .toString()
+                      .trimmed();
+    }
+    if (core.name.isEmpty() && !core.latestVersion.isEmpty()) {
+      core.name = releases.value(core.latestVersion)
+                      .toObject()
+                      .value(QStringLiteral("name"))
+                      .toString()
+                      .trimmed();
+    }
+    if (core.id.isEmpty()) {
+      continue;
+    }
+    out.push_back(std::move(core));
+  }
+  std::sort(out.begin(), out.end(), [](const InstalledCoreSnapshot& left,
+                                       const InstalledCoreSnapshot& right) {
+    return QString::localeAwareCompare(left.id, right.id) < 0;
+  });
+  return out;
+}
+
+QVector<InstalledLibrarySnapshot> parseInstalledLibrariesFromJson(const QByteArray& jsonBytes) {
+  QVector<InstalledLibrarySnapshot> out;
+  const QJsonDocument doc = QJsonDocument::fromJson(jsonBytes);
+  if (!doc.isObject()) {
+    return out;
+  }
+  const QJsonArray libs = doc.object().value(QStringLiteral("installed_libraries")).toArray();
+  out.reserve(libs.size());
+  for (const QJsonValue& value : libs) {
+    if (!value.isObject()) {
+      continue;
+    }
+    const QJsonObject lib = value.toObject().value(QStringLiteral("library")).toObject();
+    InstalledLibrarySnapshot entry;
+    entry.name = lib.value(QStringLiteral("name")).toString().trimmed();
+    entry.version = lib.value(QStringLiteral("version")).toString().trimmed();
+    entry.location = lib.value(QStringLiteral("location")).toString().trimmed();
+    const QJsonArray includes = lib.value(QStringLiteral("provides_includes")).toArray();
+    for (const QJsonValue& includeValue : includes) {
+      const QString include = normalizeIncludeToken(includeValue.toString());
+      if (!include.isEmpty()) {
+        entry.providesIncludes << include;
+        entry.providesIncludes << QFileInfo(include).fileName();
+      }
+    }
+    entry.providesIncludes = normalizeStringList(entry.providesIncludes);
+    if (entry.name.isEmpty()) {
+      continue;
+    }
+    out.push_back(std::move(entry));
+  }
+  std::sort(out.begin(), out.end(), [](const InstalledLibrarySnapshot& left,
+                                       const InstalledLibrarySnapshot& right) {
+    return QString::localeAwareCompare(left.name, right.name) < 0;
+  });
+  return out;
+}
+
 QString settingsRootForAuxFiles() {
   QSettings settings;
   QFileInfo settingsInfo(settings.fileName());
@@ -2055,6 +2218,12 @@ void MainWindow::createActions() {
   actionUploadSSL_ = new QAction(tr("Upload SSL Root Certificates"), this);
   actionUploadSSL_->setStatusTip(tr("Upload SSL Root Certificates to the board"));
 
+  actionExportSetupProfile_ = new QAction(tr("Export Setup Profile…"), this);
+  actionImportSetupProfile_ = new QAction(tr("Import Setup Profile…"), this);
+  actionGenerateProjectLockfile_ = new QAction(tr("Generate Project Lockfile"), this);
+  actionBootstrapProjectLockfile_ = new QAction(tr("Bootstrap Project from Lockfile"), this);
+  actionEnvironmentDoctor_ = new QAction(tr("Environment Doctor…"), this);
+
   // Programmer submenu actions
   actionProgrammerAVRISP_ = new QAction(tr("AVRISP mkII"), this);
   actionProgrammerAVRISP_->setCheckable(true);
@@ -2177,6 +2346,14 @@ void MainWindow::createMenus() {
   // Group 1: Firmware Uploader
   toolsMenu_->addAction(actionWiFiFirmwareUpdater_);
   toolsMenu_->addAction(actionUploadSSL_);
+  QMenu* environmentMenu = toolsMenu_->addMenu(tr("Environment"));
+  environmentMenu->addAction(actionExportSetupProfile_);
+  environmentMenu->addAction(actionImportSetupProfile_);
+  environmentMenu->addSeparator();
+  environmentMenu->addAction(actionGenerateProjectLockfile_);
+  environmentMenu->addAction(actionBootstrapProjectLockfile_);
+  environmentMenu->addSeparator();
+  environmentMenu->addAction(actionEnvironmentDoctor_);
   toolsMenu_->addSeparator();
 
   // Group 2: Board selection section
@@ -2778,6 +2955,22 @@ void MainWindow::createMenus() {
 
   connect(actionUploadSSL_, &QAction::triggered, this, [this] {
     uploadSslRootCertificates();
+  });
+
+  connect(actionExportSetupProfile_, &QAction::triggered, this, [this] {
+    exportSetupProfile();
+  });
+  connect(actionImportSetupProfile_, &QAction::triggered, this, [this] {
+    importSetupProfile();
+  });
+  connect(actionGenerateProjectLockfile_, &QAction::triggered, this, [this] {
+    generateProjectLockfile();
+  });
+  connect(actionBootstrapProjectLockfile_, &QAction::triggered, this, [this] {
+    bootstrapProjectLockfile();
+  });
+  connect(actionEnvironmentDoctor_, &QAction::triggered, this, [this] {
+    runEnvironmentDoctor();
   });
 
   // Programmer selection
@@ -6652,6 +6845,17 @@ void MainWindow::showCommandPalette() {
           tr("Open board manager panel"));
   addItem(QStringLiteral("openLibraryManager"), tr("Library Manager"),
           tr("Open library manager panel"));
+  addItem(QStringLiteral("exportSetupProfile"), tr("Export Setup Profile"),
+          tr("Export boards/libs/preferences into a profile file"));
+  addItem(QStringLiteral("importSetupProfile"), tr("Import Setup Profile"),
+          tr("Import and apply boards/libs/preferences from a profile file"));
+  addItem(QStringLiteral("generateProjectLockfile"), tr("Generate Project Lockfile"),
+          tr("Write rewritto.lock for the current sketch"));
+  addItem(QStringLiteral("bootstrapProjectLockfile"),
+          tr("Bootstrap Project from Lockfile"),
+          tr("Install board/library dependencies from rewritto.lock"));
+  addItem(QStringLiteral("environmentDoctor"), tr("Environment Doctor"),
+          tr("Run diagnostics and optional one-click fixes"));
   addItem(QStringLiteral("toggleSerialMonitor"), tr("Toggle Serial Monitor"),
           tr("Show/hide serial monitor"));
   addItem(QStringLiteral("toggleSerialPlotter"), tr("Toggle Serial Plotter"),
@@ -6699,6 +6903,16 @@ void MainWindow::showCommandPalette() {
       if (actionLibraryManager_) {
         actionLibraryManager_->trigger();
       }
+    } else if (commandId == QStringLiteral("exportSetupProfile")) {
+      exportSetupProfile();
+    } else if (commandId == QStringLiteral("importSetupProfile")) {
+      importSetupProfile();
+    } else if (commandId == QStringLiteral("generateProjectLockfile")) {
+      generateProjectLockfile();
+    } else if (commandId == QStringLiteral("bootstrapProjectLockfile")) {
+      bootstrapProjectLockfile();
+    } else if (commandId == QStringLiteral("environmentDoctor")) {
+      runEnvironmentDoctor();
     } else if (commandId == QStringLiteral("toggleSerialMonitor")) {
       if (actionSerialMonitor_) {
         actionSerialMonitor_->trigger();
@@ -7341,6 +7555,1010 @@ void MainWindow::addZipLibrary() {
       arduinoCli_->run({"lib", "install", filePath});
     }
   }
+}
+
+void MainWindow::exportSetupProfile() {
+  QSettings settings;
+  settings.beginGroup(QStringLiteral("Preferences"));
+  QStringList additionalUrls;
+  if (settings.contains(QStringLiteral("additionalUrls"))) {
+    additionalUrls = settings.value(QStringLiteral("additionalUrls")).toStringList();
+  }
+  settings.endGroup();
+
+  const ArduinoCliConfigSnapshot snapshot = readArduinoCliConfigSnapshot(
+      arduinoCli_ ? arduinoCli_->arduinoCliConfigPath() : QString{});
+  if (additionalUrls.isEmpty()) {
+    additionalUrls = snapshot.additionalUrls;
+  }
+  additionalUrls = normalizeStringList(additionalUrls);
+
+  QVector<InstalledCoreSnapshot> cores;
+  QVector<InstalledLibrarySnapshot> libraries;
+
+  if (arduinoCli_ && !arduinoCli_->arduinoCliPath().trimmed().isEmpty()) {
+    const QString cliPath = arduinoCli_->arduinoCliPath().trimmed();
+
+    const CommandResult coreListResult =
+        runCommandBlocking(cliPath,
+                           arduinoCli_->withGlobalFlags({QStringLiteral("core"),
+                                                         QStringLiteral("list"),
+                                                         QStringLiteral("--json")}),
+                           {}, {}, 120000);
+    if (commandSucceeded(coreListResult)) {
+      cores = parseInstalledCoresFromJson(coreListResult.stdoutText.toUtf8());
+    } else if (output_) {
+      output_->appendLine(
+          tr("[Profile Export] Could not read installed cores: %1")
+              .arg(commandErrorSummary(coreListResult)));
+    }
+
+    const CommandResult libListResult =
+        runCommandBlocking(cliPath,
+                           arduinoCli_->withGlobalFlags({QStringLiteral("lib"),
+                                                         QStringLiteral("list"),
+                                                         QStringLiteral("--json")}),
+                           {}, {}, 120000);
+    if (commandSucceeded(libListResult)) {
+      libraries =
+          parseInstalledLibrariesFromJson(libListResult.stdoutText.toUtf8());
+    } else if (output_) {
+      output_->appendLine(
+          tr("[Profile Export] Could not read installed libraries: %1")
+              .arg(commandErrorSummary(libListResult)));
+    }
+  }
+
+  QJsonObject prefs;
+  settings.beginGroup(QStringLiteral("Preferences"));
+  const QStringList prefKeys = {
+      QStringLiteral("theme"),          QStringLiteral("locale"),
+      QStringLiteral("uiScale"),        QStringLiteral("sketchbookDir"),
+      QStringLiteral("tabSize"),        QStringLiteral("insertSpaces"),
+      QStringLiteral("showIndentGuides"), QStringLiteral("showWhitespace"),
+      QStringLiteral("defaultLineEnding"),
+      QStringLiteral("trimTrailingWhitespace"),
+      QStringLiteral("autosaveEnabled"), QStringLiteral("autosaveInterval"),
+      QStringLiteral("compilerWarnings"),
+      QStringLiteral("verboseCompile"), QStringLiteral("verboseUpload"),
+      QStringLiteral("proxyType"),      QStringLiteral("proxyHost"),
+      QStringLiteral("proxyPort"),      QStringLiteral("proxyUsername"),
+      QStringLiteral("noProxyHosts"),   QStringLiteral("checkIndexesOnStartup"),
+  };
+  for (const QString& key : prefKeys) {
+    if (settings.contains(key)) {
+      prefs.insert(key, QJsonValue::fromVariant(settings.value(key)));
+    }
+  }
+  settings.endGroup();
+
+  QJsonArray additionalUrlsJson;
+  for (const QString& url : additionalUrls) {
+    additionalUrlsJson.append(url);
+  }
+  prefs.insert(QStringLiteral("additionalUrls"), additionalUrlsJson);
+
+  QJsonObject root;
+  root.insert(QStringLiteral("format"), QString::fromLatin1(kSetupProfileFormat));
+  root.insert(QStringLiteral("version"), kSetupProfileVersion);
+  root.insert(QStringLiteral("generatedAt"),
+              QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+  root.insert(QStringLiteral("ideVersion"), QStringLiteral(REWRITTO_IDE_VERSION));
+  root.insert(QStringLiteral("notes"),
+              tr("Proxy password is intentionally not exported."));
+  root.insert(QStringLiteral("preferences"), prefs);
+
+  QJsonObject selected;
+  selected.insert(QStringLiteral("fqbn"), currentFqbn());
+  selected.insert(QStringLiteral("port"), currentPort());
+  selected.insert(QStringLiteral("programmer"), currentProgrammer());
+  root.insert(QStringLiteral("selected"), selected);
+
+  QJsonArray coresJson;
+  for (const InstalledCoreSnapshot& core : cores) {
+    QJsonObject item;
+    item.insert(QStringLiteral("id"), core.id);
+    item.insert(QStringLiteral("installed_version"), core.installedVersion);
+    item.insert(QStringLiteral("latest_version"), core.latestVersion);
+    item.insert(QStringLiteral("name"), core.name);
+    coresJson.append(item);
+  }
+  root.insert(QStringLiteral("installed_cores"), coresJson);
+
+  QJsonArray libsJson;
+  for (const InstalledLibrarySnapshot& library : libraries) {
+    QJsonObject item;
+    item.insert(QStringLiteral("name"), library.name);
+    item.insert(QStringLiteral("version"), library.version);
+    item.insert(QStringLiteral("location"), library.location);
+    QJsonArray includes;
+    for (const QString& include : library.providesIncludes) {
+      includes.append(include);
+    }
+    item.insert(QStringLiteral("provides_includes"), includes);
+    libsJson.append(item);
+  }
+  root.insert(QStringLiteral("installed_libraries"), libsJson);
+
+  QString defaultPath = QDir(QDir::homePath())
+                            .absoluteFilePath(QStringLiteral("rewritto-setup-profile-%1.json")
+                                                  .arg(QDateTime::currentDateTime().toString(
+                                                      QStringLiteral("yyyyMMdd-HHmmss"))));
+  const QString targetPath = QFileDialog::getSaveFileName(
+      this, tr("Export Setup Profile"), defaultPath,
+      tr("Rewritto Setup Profile (*.json);;JSON Files (*.json);;All Files (*)"));
+  if (targetPath.trimmed().isEmpty()) {
+    return;
+  }
+
+  QSaveFile save(targetPath);
+  if (!save.open(QIODevice::WriteOnly | QIODevice::Text)) {
+    QMessageBox::warning(this, tr("Export Setup Profile"),
+                         tr("Could not write profile file."));
+    return;
+  }
+  const QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Indented);
+  if (save.write(payload) != payload.size() || !save.commit()) {
+    QMessageBox::warning(this, tr("Export Setup Profile"),
+                         tr("Failed to save profile file."));
+    return;
+  }
+
+  showToast(tr("Setup profile exported"));
+  if (output_) {
+    output_->appendLine(tr("[Setup Profile] Exported to: %1").arg(targetPath));
+  }
+}
+
+void MainWindow::importSetupProfile() {
+  const QString profilePath = QFileDialog::getOpenFileName(
+      this, tr("Import Setup Profile"), QDir::homePath(),
+      tr("Rewritto Setup Profile (*.json);;JSON Files (*.json);;All Files (*)"));
+  if (profilePath.trimmed().isEmpty()) {
+    return;
+  }
+
+  QFile file(profilePath);
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    QMessageBox::warning(this, tr("Import Setup Profile"),
+                         tr("Could not open profile file."));
+    return;
+  }
+  const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+  if (!doc.isObject()) {
+    QMessageBox::warning(this, tr("Import Setup Profile"),
+                         tr("Profile file is not valid JSON."));
+    return;
+  }
+  const QJsonObject root = doc.object();
+  const QString format = root.value(QStringLiteral("format")).toString().trimmed();
+  if (!format.isEmpty() && format != QString::fromLatin1(kSetupProfileFormat)) {
+    QMessageBox::warning(this, tr("Import Setup Profile"),
+                         tr("Unsupported profile format: %1").arg(format));
+    return;
+  }
+
+  auto jsonArrayToStringList = [](const QJsonValue& value) {
+    QStringList out;
+    const QJsonArray array = value.toArray();
+    out.reserve(array.size());
+    for (const QJsonValue& item : array) {
+      const QString text = item.toString().trimmed();
+      if (!text.isEmpty()) {
+        out << text;
+      }
+    }
+    return normalizeStringList(out);
+  };
+
+  const QJsonObject prefs = root.value(QStringLiteral("preferences")).toObject();
+  QStringList additionalUrls = jsonArrayToStringList(prefs.value(QStringLiteral("additionalUrls")));
+
+  struct CoreInstallSpec final {
+    QString id;
+    QString version;
+  };
+  QVector<CoreInstallSpec> coresToInstall;
+  const QJsonArray coresArray = root.value(QStringLiteral("installed_cores")).toArray();
+  coresToInstall.reserve(coresArray.size());
+  for (const QJsonValue& value : coresArray) {
+    if (!value.isObject()) {
+      continue;
+    }
+    const QJsonObject obj = value.toObject();
+    const QString id = obj.value(QStringLiteral("id")).toString().trimmed();
+    if (id.isEmpty()) {
+      continue;
+    }
+    coresToInstall.push_back(
+        {id, obj.value(QStringLiteral("installed_version")).toString().trimmed()});
+  }
+
+  struct LibraryInstallSpec final {
+    QString name;
+    QString version;
+  };
+  QVector<LibraryInstallSpec> librariesToInstall;
+  const QJsonArray libsArray =
+      root.value(QStringLiteral("installed_libraries")).toArray();
+  librariesToInstall.reserve(libsArray.size());
+  for (const QJsonValue& value : libsArray) {
+    if (!value.isObject()) {
+      continue;
+    }
+    const QJsonObject obj = value.toObject();
+    const QString name = obj.value(QStringLiteral("name")).toString().trimmed();
+    if (name.isEmpty()) {
+      continue;
+    }
+    librariesToInstall.push_back(
+        {name, obj.value(QStringLiteral("version")).toString().trimmed()});
+  }
+
+  const QString summary = tr("Apply setup profile?\n\n%1 board URL(s)\n%2 core(s)\n%3 library(s)")
+                              .arg(additionalUrls.size())
+                              .arg(coresToInstall.size())
+                              .arg(librariesToInstall.size());
+  if (QMessageBox::question(this, tr("Import Setup Profile"), summary,
+                            QMessageBox::Yes | QMessageBox::No,
+                            QMessageBox::Yes) != QMessageBox::Yes) {
+    return;
+  }
+
+  QSettings settings;
+  settings.beginGroup(QStringLiteral("Preferences"));
+  const QStringList prefKeys = {
+      QStringLiteral("theme"),       QStringLiteral("locale"),
+      QStringLiteral("uiScale"),     QStringLiteral("sketchbookDir"),
+      QStringLiteral("tabSize"),     QStringLiteral("insertSpaces"),
+      QStringLiteral("showIndentGuides"), QStringLiteral("showWhitespace"),
+      QStringLiteral("defaultLineEnding"),
+      QStringLiteral("trimTrailingWhitespace"),
+      QStringLiteral("autosaveEnabled"), QStringLiteral("autosaveInterval"),
+      QStringLiteral("compilerWarnings"),
+      QStringLiteral("verboseCompile"), QStringLiteral("verboseUpload"),
+      QStringLiteral("proxyType"),   QStringLiteral("proxyHost"),
+      QStringLiteral("proxyPort"),   QStringLiteral("proxyUsername"),
+      QStringLiteral("noProxyHosts"), QStringLiteral("checkIndexesOnStartup"),
+  };
+  for (const QString& key : prefKeys) {
+    if (prefs.contains(key)) {
+      settings.setValue(key, prefs.value(key).toVariant());
+    }
+  }
+  settings.endGroup();
+
+  QString mergeError;
+  QStringList mergedUrls;
+  if (!additionalUrls.isEmpty() &&
+      !mergeAdditionalBoardUrlsIntoPreferences(additionalUrls, &mergeError,
+                                               &mergedUrls)) {
+    QMessageBox::warning(this, tr("Import Setup Profile"),
+                         tr("Could not merge board manager URLs.\n\n%1")
+                             .arg(mergeError));
+    return;
+  }
+  if (!mergedUrls.isEmpty()) {
+    settings.beginGroup(QStringLiteral("Preferences"));
+    settings.setValue(QStringLiteral("additionalUrls"), mergedUrls);
+    settings.endGroup();
+  }
+
+  bool installNow = false;
+  if ((!coresToInstall.isEmpty() || !librariesToInstall.isEmpty()) &&
+      arduinoCli_ && !arduinoCli_->arduinoCliPath().trimmed().isEmpty()) {
+    installNow = QMessageBox::question(
+                     this, tr("Install Components"),
+                     tr("Install cores and libraries from this profile now?"),
+                     QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) ==
+                 QMessageBox::Yes;
+  }
+
+  QStringList failures;
+  if (installNow) {
+    const QString cliPath = arduinoCli_->arduinoCliPath().trimmed();
+    if (output_) {
+      output_->appendLine(
+          tr("[Setup Profile] Updating indexes before installation..."));
+    }
+    const CommandResult coreIndexResult = runCommandBlocking(
+        cliPath,
+        arduinoCli_->withGlobalFlags({QStringLiteral("core"),
+                                      QStringLiteral("update-index")}),
+        {}, {}, 600000);
+    if (!commandSucceeded(coreIndexResult)) {
+      failures << tr("core update-index: %1")
+                      .arg(commandErrorSummary(coreIndexResult));
+    }
+    const CommandResult libIndexResult = runCommandBlocking(
+        cliPath,
+        arduinoCli_->withGlobalFlags({QStringLiteral("lib"),
+                                      QStringLiteral("update-index")}),
+        {}, {}, 600000);
+    if (!commandSucceeded(libIndexResult)) {
+      failures << tr("lib update-index: %1")
+                      .arg(commandErrorSummary(libIndexResult));
+    }
+
+    for (const CoreInstallSpec& core : coresToInstall) {
+      const QString spec = core.version.isEmpty()
+                               ? core.id
+                               : QStringLiteral("%1@%2").arg(core.id, core.version);
+      if (output_) {
+        output_->appendLine(
+            tr("[Setup Profile] Installing core %1 ...").arg(spec));
+      }
+      const CommandResult installResult = runCommandBlocking(
+          cliPath,
+          arduinoCli_->withGlobalFlags({QStringLiteral("core"),
+                                        QStringLiteral("install"), spec}),
+          {}, {}, 900000);
+      if (!commandSucceeded(installResult)) {
+        failures << tr("core install %1: %2")
+                        .arg(spec, commandErrorSummary(installResult));
+      }
+    }
+
+    for (const LibraryInstallSpec& lib : librariesToInstall) {
+      const QString spec = lib.version.isEmpty()
+                               ? lib.name
+                               : QStringLiteral("%1@%2").arg(lib.name, lib.version);
+      if (output_) {
+        output_->appendLine(
+            tr("[Setup Profile] Installing library %1 ...").arg(spec));
+      }
+      const CommandResult installResult = runCommandBlocking(
+          cliPath,
+          arduinoCli_->withGlobalFlags({QStringLiteral("lib"),
+                                        QStringLiteral("install"), spec}),
+          {}, {}, 900000);
+      if (!commandSucceeded(installResult)) {
+        failures << tr("lib install %1: %2")
+                        .arg(spec, commandErrorSummary(installResult));
+      }
+    }
+  }
+
+  settings.beginGroup(QStringLiteral("Preferences"));
+  const QString appliedTheme =
+      settings.value(QStringLiteral("theme"), QStringLiteral("system")).toString();
+  const double appliedScale = settings.value(QStringLiteral("uiScale"), 1.0).toDouble();
+  const bool insertSpaces = settings.value(QStringLiteral("insertSpaces"), true).toBool();
+  const int tabSize = settings.value(QStringLiteral("tabSize"), 2).toInt();
+  const bool showIndentGuides =
+      settings.value(QStringLiteral("showIndentGuides"), true).toBool();
+  const bool showWhitespace =
+      settings.value(QStringLiteral("showWhitespace"), false).toBool();
+  const bool autosaveEnabled =
+      settings.value(QStringLiteral("autosaveEnabled"), false).toBool();
+  const int autosaveInterval =
+      settings.value(QStringLiteral("autosaveInterval"), 30).toInt();
+  const QString fontFamily =
+      settings.value(QStringLiteral("editorFontFamily")).toString().trimmed();
+  const int fontSize = settings.value(QStringLiteral("editorFontSize"), 0).toInt();
+  settings.endGroup();
+
+  UiScaleManager::apply(appliedScale);
+  ThemeManager::apply(appliedTheme);
+  rebuildContextToolbar();
+  if (editor_) {
+    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    if (!fontFamily.isEmpty()) {
+      font.setFamily(fontFamily);
+    }
+    if (fontSize > 0) {
+      font.setPointSize(fontSize);
+    }
+    editor_->setTheme(isThemeDark(appliedTheme));
+    editor_->setEditorFont(font);
+    editor_->setEditorSettings(tabSize, insertSpaces);
+    editor_->setShowIndentGuides(showIndentGuides);
+    editor_->setShowWhitespace(showWhitespace);
+    editor_->setAutosaveEnabled(autosaveEnabled);
+    editor_->setAutosaveIntervalSeconds(autosaveInterval);
+  }
+  updateSketchbookView();
+
+  if (boardsManager_) {
+    boardsManager_->refresh();
+  }
+  if (libraryManager_) {
+    libraryManager_->refresh();
+  }
+  refreshInstalledBoards();
+  refreshConnectedPorts();
+
+  if (failures.isEmpty()) {
+    showToast(tr("Setup profile imported"));
+    QMessageBox::information(
+        this, tr("Import Setup Profile"),
+        tr("Profile imported successfully.\n\nSome settings may require restart."));
+  } else {
+    QMessageBox::warning(
+        this, tr("Import Setup Profile"),
+        tr("Profile imported with errors:\n\n%1").arg(failures.join(QStringLiteral("\n"))));
+  }
+}
+
+void MainWindow::generateProjectLockfile() {
+  const QString sketchFolder = currentSketchFolderPath();
+  if (sketchFolder.trimmed().isEmpty()) {
+    QMessageBox::warning(this, tr("Generate Project Lockfile"),
+                         tr("Open a sketch first."));
+    return;
+  }
+
+  QStringList additionalUrls;
+  {
+    QSettings settings;
+    settings.beginGroup(QStringLiteral("Preferences"));
+    additionalUrls = settings.value(QStringLiteral("additionalUrls")).toStringList();
+    settings.endGroup();
+  }
+  if (additionalUrls.isEmpty()) {
+    const ArduinoCliConfigSnapshot snapshot = readArduinoCliConfigSnapshot(
+        arduinoCli_ ? arduinoCli_->arduinoCliConfigPath() : QString{});
+    additionalUrls = snapshot.additionalUrls;
+  }
+  additionalUrls = normalizeStringList(additionalUrls);
+
+  QVector<InstalledCoreSnapshot> installedCores;
+  QVector<InstalledLibrarySnapshot> installedLibraries;
+  if (arduinoCli_ && !arduinoCli_->arduinoCliPath().trimmed().isEmpty()) {
+    const QString cliPath = arduinoCli_->arduinoCliPath().trimmed();
+    const CommandResult coreListResult = runCommandBlocking(
+        cliPath,
+        arduinoCli_->withGlobalFlags({QStringLiteral("core"),
+                                      QStringLiteral("list"),
+                                      QStringLiteral("--json")}),
+        {}, {}, 120000);
+    if (commandSucceeded(coreListResult)) {
+      installedCores = parseInstalledCoresFromJson(coreListResult.stdoutText.toUtf8());
+    }
+    const CommandResult libListResult = runCommandBlocking(
+        cliPath,
+        arduinoCli_->withGlobalFlags({QStringLiteral("lib"),
+                                      QStringLiteral("list"),
+                                      QStringLiteral("--json")}),
+        {}, {}, 120000);
+    if (commandSucceeded(libListResult)) {
+      installedLibraries =
+          parseInstalledLibrariesFromJson(libListResult.stdoutText.toUtf8());
+    }
+  }
+
+  QString selectedCoreId;
+  const QString fqbn = currentFqbn().trimmed();
+  const QStringList fqbnParts = fqbn.split(QLatin1Char(':'), Qt::SkipEmptyParts);
+  if (fqbnParts.size() >= 2) {
+    selectedCoreId = fqbnParts.at(0).trimmed() + QStringLiteral(":") +
+                     fqbnParts.at(1).trimmed();
+  }
+
+  QVector<InstalledCoreSnapshot> lockCores;
+  if (!selectedCoreId.isEmpty()) {
+    for (const InstalledCoreSnapshot& core : installedCores) {
+      if (core.id == selectedCoreId) {
+        lockCores.push_back(core);
+        break;
+      }
+    }
+  }
+  if (lockCores.isEmpty()) {
+    lockCores = installedCores;
+  }
+
+  const QSet<QString> usedHeaders = collectSketchIncludeHeaders(sketchFolder);
+  QVector<InstalledLibrarySnapshot> lockLibraries;
+  for (const InstalledLibrarySnapshot& library : installedLibraries) {
+    bool matches = false;
+    for (const QString& include : library.providesIncludes) {
+      if (usedHeaders.contains(include) ||
+          usedHeaders.contains(QFileInfo(include).fileName())) {
+        matches = true;
+        break;
+      }
+    }
+    if (!matches && !library.name.isEmpty()) {
+      for (const QString& header : usedHeaders) {
+        if (header.startsWith(library.name, Qt::CaseInsensitive)) {
+          matches = true;
+          break;
+        }
+      }
+    }
+    if (matches) {
+      lockLibraries.push_back(library);
+    }
+  }
+  if (lockLibraries.isEmpty()) {
+    lockLibraries = installedLibraries;
+  }
+
+  QJsonObject root;
+  root.insert(QStringLiteral("format"), QString::fromLatin1(kProjectLockFormat));
+  root.insert(QStringLiteral("version"), kProjectLockVersion);
+  root.insert(QStringLiteral("generatedAt"),
+              QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+
+  QJsonObject sketchObj;
+  sketchObj.insert(QStringLiteral("name"), QFileInfo(sketchFolder).fileName());
+  sketchObj.insert(QStringLiteral("path"), sketchFolder);
+  root.insert(QStringLiteral("sketch"), sketchObj);
+
+  QJsonObject boardObj;
+  boardObj.insert(QStringLiteral("fqbn"), fqbn);
+  boardObj.insert(QStringLiteral("programmer"), currentProgrammer());
+  root.insert(QStringLiteral("board"), boardObj);
+
+  QJsonArray urlArray;
+  for (const QString& url : additionalUrls) {
+    urlArray.append(url);
+  }
+  root.insert(QStringLiteral("additional_urls"), urlArray);
+
+  QJsonArray coreArray;
+  for (const InstalledCoreSnapshot& core : lockCores) {
+    QJsonObject item;
+    item.insert(QStringLiteral("id"), core.id);
+    item.insert(QStringLiteral("version"), core.installedVersion);
+    coreArray.append(item);
+  }
+  root.insert(QStringLiteral("cores"), coreArray);
+
+  QJsonArray libraryArray;
+  for (const InstalledLibrarySnapshot& library : lockLibraries) {
+    QJsonObject item;
+    item.insert(QStringLiteral("name"), library.name);
+    item.insert(QStringLiteral("version"), library.version);
+    QJsonArray includes;
+    for (const QString& include : library.providesIncludes) {
+      includes.append(include);
+    }
+    item.insert(QStringLiteral("includes"), includes);
+    libraryArray.append(item);
+  }
+  root.insert(QStringLiteral("libraries"), libraryArray);
+
+  const QString lockPath =
+      QDir(sketchFolder).absoluteFilePath(QStringLiteral("rewritto.lock"));
+  QSaveFile save(lockPath);
+  if (!save.open(QIODevice::WriteOnly | QIODevice::Text)) {
+    QMessageBox::warning(this, tr("Generate Project Lockfile"),
+                         tr("Could not write rewritto.lock."));
+    return;
+  }
+  const QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Indented);
+  if (save.write(payload) != payload.size() || !save.commit()) {
+    QMessageBox::warning(this, tr("Generate Project Lockfile"),
+                         tr("Failed to save rewritto.lock."));
+    return;
+  }
+
+  showToast(tr("Project lockfile generated"));
+  if (output_) {
+    output_->appendLine(tr("[Lockfile] Generated: %1").arg(lockPath));
+  }
+}
+
+void MainWindow::bootstrapProjectLockfile() {
+  const QString sketchFolder = currentSketchFolderPath();
+  if (sketchFolder.trimmed().isEmpty()) {
+    QMessageBox::warning(this, tr("Bootstrap Project"),
+                         tr("Open a sketch first."));
+    return;
+  }
+
+  const QString lockPath =
+      QDir(sketchFolder).absoluteFilePath(QStringLiteral("rewritto.lock"));
+  QFile file(lockPath);
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    QMessageBox::warning(this, tr("Bootstrap Project"),
+                         tr("rewritto.lock not found in current sketch folder."));
+    return;
+  }
+  const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+  if (!doc.isObject()) {
+    QMessageBox::warning(this, tr("Bootstrap Project"),
+                         tr("rewritto.lock is not valid JSON."));
+    return;
+  }
+  const QJsonObject root = doc.object();
+  const QString format = root.value(QStringLiteral("format")).toString().trimmed();
+  if (!format.isEmpty() && format != QString::fromLatin1(kProjectLockFormat)) {
+    QMessageBox::warning(this, tr("Bootstrap Project"),
+                         tr("Unsupported lockfile format: %1").arg(format));
+    return;
+  }
+
+  auto jsonArrayToStringList = [](const QJsonValue& value) {
+    QStringList out;
+    const QJsonArray array = value.toArray();
+    out.reserve(array.size());
+    for (const QJsonValue& item : array) {
+      const QString text = item.toString().trimmed();
+      if (!text.isEmpty()) {
+        out << text;
+      }
+    }
+    return normalizeStringList(out);
+  };
+
+  const QStringList additionalUrls =
+      jsonArrayToStringList(root.value(QStringLiteral("additional_urls")));
+
+  struct InstallSpec final {
+    QString name;
+    QString version;
+  };
+  QVector<InstallSpec> coreSpecs;
+  const QJsonArray coreArray = root.value(QStringLiteral("cores")).toArray();
+  coreSpecs.reserve(coreArray.size());
+  for (const QJsonValue& value : coreArray) {
+    if (!value.isObject()) {
+      continue;
+    }
+    const QJsonObject obj = value.toObject();
+    const QString id = obj.value(QStringLiteral("id")).toString().trimmed();
+    if (!id.isEmpty()) {
+      coreSpecs.push_back({id, obj.value(QStringLiteral("version")).toString().trimmed()});
+    }
+  }
+
+  QVector<InstallSpec> librarySpecs;
+  const QJsonArray libraryArray = root.value(QStringLiteral("libraries")).toArray();
+  librarySpecs.reserve(libraryArray.size());
+  for (const QJsonValue& value : libraryArray) {
+    if (!value.isObject()) {
+      continue;
+    }
+    const QJsonObject obj = value.toObject();
+    const QString name = obj.value(QStringLiteral("name")).toString().trimmed();
+    if (!name.isEmpty()) {
+      librarySpecs.push_back(
+          {name, obj.value(QStringLiteral("version")).toString().trimmed()});
+    }
+  }
+
+  const QString fqbn =
+      root.value(QStringLiteral("board")).toObject().value(QStringLiteral("fqbn")).toString().trimmed();
+
+  if (QMessageBox::question(
+          this, tr("Bootstrap Project"),
+          tr("Apply rewritto.lock now?\n\n%1 board URL(s)\n%2 core(s)\n%3 library(s)")
+              .arg(additionalUrls.size())
+              .arg(coreSpecs.size())
+              .arg(librarySpecs.size()),
+          QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes) {
+    return;
+  }
+
+  QString mergeError;
+  if (!additionalUrls.isEmpty() &&
+      !mergeAdditionalBoardUrlsIntoPreferences(additionalUrls, &mergeError, nullptr)) {
+    QMessageBox::warning(this, tr("Bootstrap Project"),
+                         tr("Could not merge board manager URLs.\n\n%1")
+                             .arg(mergeError));
+    return;
+  }
+
+  if (!arduinoCli_ || arduinoCli_->arduinoCliPath().trimmed().isEmpty()) {
+    QMessageBox::warning(this, tr("Bootstrap Project"),
+                         tr("Arduino CLI is unavailable."));
+    return;
+  }
+  const QString cliPath = arduinoCli_->arduinoCliPath().trimmed();
+
+  QStringList failures;
+  if (output_) {
+    output_->appendLine(tr("[Lockfile] Updating indexes..."));
+  }
+  const CommandResult coreIndexResult = runCommandBlocking(
+      cliPath,
+      arduinoCli_->withGlobalFlags({QStringLiteral("core"),
+                                    QStringLiteral("update-index")}),
+      {}, {}, 600000);
+  if (!commandSucceeded(coreIndexResult)) {
+    failures << tr("core update-index: %1")
+                    .arg(commandErrorSummary(coreIndexResult));
+  }
+
+  const CommandResult libIndexResult = runCommandBlocking(
+      cliPath,
+      arduinoCli_->withGlobalFlags({QStringLiteral("lib"),
+                                    QStringLiteral("update-index")}),
+      {}, {}, 600000);
+  if (!commandSucceeded(libIndexResult)) {
+    failures << tr("lib update-index: %1")
+                    .arg(commandErrorSummary(libIndexResult));
+  }
+
+  for (const InstallSpec& core : coreSpecs) {
+    const QString spec = core.version.isEmpty()
+                             ? core.name
+                             : QStringLiteral("%1@%2").arg(core.name, core.version);
+    if (output_) {
+      output_->appendLine(tr("[Lockfile] Installing core %1 ...").arg(spec));
+    }
+    const CommandResult installResult = runCommandBlocking(
+        cliPath,
+        arduinoCli_->withGlobalFlags({QStringLiteral("core"),
+                                      QStringLiteral("install"), spec}),
+        {}, {}, 900000);
+    if (!commandSucceeded(installResult)) {
+      failures << tr("core install %1: %2")
+                      .arg(spec, commandErrorSummary(installResult));
+    }
+  }
+
+  for (const InstallSpec& lib : librarySpecs) {
+    const QString spec = lib.version.isEmpty()
+                             ? lib.name
+                             : QStringLiteral("%1@%2").arg(lib.name, lib.version);
+    if (output_) {
+      output_->appendLine(tr("[Lockfile] Installing library %1 ...").arg(spec));
+    }
+    const CommandResult installResult = runCommandBlocking(
+        cliPath,
+        arduinoCli_->withGlobalFlags({QStringLiteral("lib"),
+                                      QStringLiteral("install"), spec}),
+        {}, {}, 900000);
+    if (!commandSucceeded(installResult)) {
+      failures << tr("lib install %1: %2")
+                      .arg(spec, commandErrorSummary(installResult));
+    }
+  }
+
+  if (!fqbn.isEmpty()) {
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+    settings.setValue(kFqbnKey, fqbn);
+    settings.endGroup();
+    storeFqbnForCurrentSketch(fqbn);
+  }
+
+  if (boardsManager_) {
+    boardsManager_->refresh();
+  }
+  if (libraryManager_) {
+    libraryManager_->refresh();
+  }
+  refreshInstalledBoards();
+  refreshConnectedPorts();
+
+  if (failures.isEmpty()) {
+    showToast(tr("Project bootstrap completed"));
+    QMessageBox::information(this, tr("Bootstrap Project"),
+                             tr("Project dependencies were installed."));
+  } else {
+    QMessageBox::warning(
+        this, tr("Bootstrap Project"),
+        tr("Bootstrap completed with errors:\n\n%1")
+            .arg(failures.join(QStringLiteral("\n"))));
+  }
+}
+
+void MainWindow::runEnvironmentDoctor() {
+  const QString cliPath =
+      arduinoCli_ ? arduinoCli_->arduinoCliPath().trimmed() : QString{};
+  const QString configPath =
+      arduinoCli_ ? arduinoCli_->arduinoCliConfigPath().trimmed() : QString{};
+
+  QSettings settings;
+  settings.beginGroup(QStringLiteral("Preferences"));
+  QString sketchbookDir = settings.value(QStringLiteral("sketchbookDir")).toString().trimmed();
+  QStringList additionalUrls = settings.value(QStringLiteral("additionalUrls")).toStringList();
+  settings.endGroup();
+  if (sketchbookDir.isEmpty()) {
+    sketchbookDir = defaultSketchbookDir();
+  }
+  if (additionalUrls.isEmpty()) {
+    const ArduinoCliConfigSnapshot snapshot = readArduinoCliConfigSnapshot(configPath);
+    additionalUrls = snapshot.additionalUrls;
+  }
+  additionalUrls = normalizeStringList(additionalUrls);
+
+  bool fixSketchbookDir = false;
+  bool fixSeedUrls = false;
+  bool fixWriteConfig = false;
+  bool fixCoreIndex = false;
+  bool fixLibIndex = false;
+  bool fixBoardSetupWizard = false;
+
+  QStringList lines;
+  int errorCount = 0;
+  int warningCount = 0;
+
+  if (cliPath.isEmpty() || !QFileInfo::exists(cliPath)) {
+    lines << tr("[ERROR] Arduino CLI executable not found.");
+    ++errorCount;
+  } else {
+    lines << tr("[OK] Arduino CLI: %1").arg(cliPath);
+  }
+
+  if (configPath.isEmpty()) {
+    lines << tr("[WARN] Arduino CLI config path is empty.");
+    ++warningCount;
+    fixWriteConfig = !cliPath.isEmpty();
+  } else if (!QFileInfo::exists(configPath)) {
+    lines << tr("[WARN] Arduino CLI config missing: %1").arg(configPath);
+    ++warningCount;
+    fixWriteConfig = !cliPath.isEmpty();
+  } else {
+    lines << tr("[OK] Arduino CLI config: %1").arg(configPath);
+  }
+
+  if (sketchbookDir.isEmpty()) {
+    lines << tr("[WARN] Sketchbook folder is not configured.");
+    ++warningCount;
+    fixSketchbookDir = true;
+  } else if (!QFileInfo(sketchbookDir).isDir()) {
+    lines << tr("[WARN] Sketchbook folder missing: %1").arg(sketchbookDir);
+    ++warningCount;
+    fixSketchbookDir = true;
+  } else {
+    lines << tr("[OK] Sketchbook folder: %1").arg(sketchbookDir);
+  }
+
+  if (additionalUrls.isEmpty()) {
+    lines << tr("[WARN] Additional board URLs are empty.");
+    ++warningCount;
+    fixSeedUrls = true;
+  } else {
+    lines << tr("[OK] Additional board URLs: %1").arg(additionalUrls.size());
+  }
+
+  int installedCoreCount = -1;
+  int installedLibCount = -1;
+  if (!cliPath.isEmpty() && arduinoCli_) {
+    const CommandResult coreListResult =
+        runCommandBlocking(cliPath,
+                           arduinoCli_->withGlobalFlags({QStringLiteral("core"),
+                                                         QStringLiteral("list"),
+                                                         QStringLiteral("--json")}),
+                           {}, {}, 120000);
+    if (commandSucceeded(coreListResult)) {
+      installedCoreCount =
+          parseInstalledCoresFromJson(coreListResult.stdoutText.toUtf8()).size();
+      lines << tr("[OK] Installed cores: %1").arg(installedCoreCount);
+      if (installedCoreCount == 0) {
+        ++warningCount;
+        lines << tr("[WARN] No board cores installed.");
+        fixBoardSetupWizard = true;
+      }
+    } else {
+      ++errorCount;
+      lines << tr("[ERROR] Failed to list installed cores: %1")
+                   .arg(commandErrorSummary(coreListResult));
+      fixCoreIndex = true;
+    }
+
+    const CommandResult libListResult =
+        runCommandBlocking(cliPath,
+                           arduinoCli_->withGlobalFlags({QStringLiteral("lib"),
+                                                         QStringLiteral("list"),
+                                                         QStringLiteral("--json")}),
+                           {}, {}, 120000);
+    if (commandSucceeded(libListResult)) {
+      installedLibCount =
+          parseInstalledLibrariesFromJson(libListResult.stdoutText.toUtf8()).size();
+      lines << tr("[OK] Installed libraries: %1").arg(installedLibCount);
+    } else {
+      ++errorCount;
+      lines << tr("[ERROR] Failed to list installed libraries: %1")
+                   .arg(commandErrorSummary(libListResult));
+      fixLibIndex = true;
+    }
+  }
+
+  QString summaryText;
+  if (errorCount == 0 && warningCount == 0) {
+    summaryText = tr("No issues found. Environment looks healthy.");
+  } else {
+    summaryText = tr("Environment Doctor found %1 error(s) and %2 warning(s).")
+                      .arg(errorCount)
+                      .arg(warningCount);
+  }
+
+  QMessageBox box(this);
+  box.setWindowTitle(tr("Environment Doctor"));
+  box.setIcon(errorCount > 0 ? QMessageBox::Warning : QMessageBox::Information);
+  box.setText(summaryText);
+  box.setDetailedText(lines.join(QStringLiteral("\n")));
+  QPushButton* fixButton = nullptr;
+  const bool canFix = fixSketchbookDir || fixSeedUrls || fixWriteConfig ||
+                      fixCoreIndex || fixLibIndex || fixBoardSetupWizard;
+  if (canFix) {
+    fixButton = box.addButton(tr("Run Recommended Fixes"), QMessageBox::AcceptRole);
+  }
+  box.addButton(QMessageBox::Close);
+  box.exec();
+
+  if (!fixButton || box.clickedButton() != fixButton) {
+    return;
+  }
+
+  QStringList fixResults;
+  if (fixSketchbookDir) {
+    if (QDir().mkpath(sketchbookDir)) {
+      fixResults << tr("[OK] Created sketchbook folder.");
+    } else {
+      fixResults << tr("[WARN] Could not create sketchbook folder.");
+    }
+  }
+
+  QStringList mergedUrls = additionalUrls;
+  if (fixSeedUrls) {
+    QString mergeError;
+    QStringList seeded = loadSeededAdditionalBoardsUrls();
+    if (mergeAdditionalBoardUrlsIntoPreferences(seeded, &mergeError, &mergedUrls)) {
+      fixResults << tr("[OK] Seeded additional board URLs.");
+    } else {
+      fixResults << tr("[WARN] Could not seed board URLs: %1").arg(mergeError);
+    }
+  }
+
+  if (fixWriteConfig && arduinoCli_) {
+    QString configError;
+    if (updateArduinoCliConfig(arduinoCli_->arduinoCliConfigPath(), sketchbookDir,
+                               mergedUrls, &configError)) {
+      fixResults << tr("[OK] Updated Arduino CLI config.");
+    } else {
+      fixResults << tr("[WARN] Could not update Arduino CLI config: %1")
+                        .arg(configError);
+    }
+  }
+
+  if ((fixCoreIndex || fixLibIndex) && arduinoCli_ &&
+      !arduinoCli_->arduinoCliPath().trimmed().isEmpty()) {
+    const QString path = arduinoCli_->arduinoCliPath().trimmed();
+    if (fixCoreIndex) {
+      const CommandResult result = runCommandBlocking(
+          path,
+          arduinoCli_->withGlobalFlags({QStringLiteral("core"),
+                                        QStringLiteral("update-index")}),
+          {}, {}, 600000);
+      if (commandSucceeded(result)) {
+        fixResults << tr("[OK] Updated boards index.");
+      } else {
+        fixResults << tr("[WARN] Boards index update failed: %1")
+                          .arg(commandErrorSummary(result));
+      }
+    }
+    if (fixLibIndex) {
+      const CommandResult result = runCommandBlocking(
+          path,
+          arduinoCli_->withGlobalFlags({QStringLiteral("lib"),
+                                        QStringLiteral("update-index")}),
+          {}, {}, 600000);
+      if (commandSucceeded(result)) {
+        fixResults << tr("[OK] Updated libraries index.");
+      } else {
+        fixResults << tr("[WARN] Libraries index update failed: %1")
+                          .arg(commandErrorSummary(result));
+      }
+    }
+  }
+
+  if (fixBoardSetupWizard) {
+    runBoardSetupWizard();
+    fixResults << tr("[OK] Board Setup Wizard opened.");
+  }
+
+  if (boardsManager_) {
+    boardsManager_->refresh();
+  }
+  if (libraryManager_) {
+    libraryManager_->refresh();
+  }
+  refreshInstalledBoards();
+  refreshConnectedPorts();
+  updateSketchbookView();
+
+  QMessageBox::information(this, tr("Environment Doctor"),
+                           fixResults.isEmpty()
+                               ? tr("No automatic fixes were applied.")
+                               : fixResults.join(QStringLiteral("\n")));
 }
 
 // === Tools Menu Actions ===
