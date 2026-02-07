@@ -92,6 +92,7 @@ class MainWindow final : public QMainWindow {
     Fonts,
     Snapshots,
     Github,
+    Mcp,
   };
 
   SketchManager* sketchManager_ = nullptr;
@@ -147,6 +148,7 @@ class MainWindow final : public QMainWindow {
   QAction* actionContextFontsMode_ = nullptr;
   QAction* actionContextSnapshotsMode_ = nullptr;
   QAction* actionContextGithubMode_ = nullptr;
+  QAction* actionContextMcpMode_ = nullptr;
   QActionGroup* contextModeGroup_ = nullptr;
   QAction* actionSnapshotCapture_ = nullptr;
   QAction* actionSnapshotCompare_ = nullptr;
@@ -155,6 +157,15 @@ class MainWindow final : public QMainWindow {
   QAction* actionGitInitRepo_ = nullptr;
   QAction* actionGitCommit_ = nullptr;
   QAction* actionGitPush_ = nullptr;
+  QAction* actionMcpConfigure_ = nullptr;
+  QAction* actionMcpStart_ = nullptr;
+  QAction* actionMcpStop_ = nullptr;
+  QAction* actionMcpRestart_ = nullptr;
+  QAction* actionMcpAutostart_ = nullptr;
+  QLabel* mcpStatusLabel_ = nullptr;
+  QProcess* mcpServerProcess_ = nullptr;
+  QString mcpServerCommand_;
+  bool mcpStopRequested_ = false;
   QAction* actionRefreshBoards_ = nullptr;
   QAction* actionRefreshPorts_ = nullptr;
   QAction* actionSelectBoard_ = nullptr;
@@ -360,6 +371,11 @@ class MainWindow final : public QMainWindow {
   void setContextToolbarMode(ContextToolbarMode mode);
   void restyleContextModeToolBar();
   void rebuildContextToolbar();
+  void configureMcpServer();
+  void startMcpServer();
+  void stopMcpServer();
+  void restartMcpServer();
+  void updateMcpUiState();
   QHash<QString, QByteArray> snapshotFileOverridesForSketch(const QString& sketchFolder) const;
   QHash<QString, QByteArray> currentSketchFilesForCompare(
       const QString& sketchFolder,

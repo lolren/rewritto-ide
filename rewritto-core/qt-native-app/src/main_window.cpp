@@ -129,6 +129,8 @@ static constexpr auto kFqbnKey = "fqbn";
 static constexpr auto kPortKey = "port";
 static constexpr auto kProgrammerKey = "programmer";
 static constexpr auto kOptimizeForDebugKey = "optimizeForDebug";
+static constexpr auto kMcpServerCommandKey = "mcpServerCommand";
+static constexpr auto kMcpAutoStartKey = "mcpAutoStart";
 static constexpr auto kOpenFilesKey = "openFiles";
 static constexpr auto kActiveFileKey = "activeFile";
 static constexpr auto kEditorViewStatesKey = "editorViewStates";
@@ -1173,10 +1175,22 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     }
   });
 
+  if (actionMcpAutostart_ && actionMcpAutostart_->isChecked()) {
+    QTimer::singleShot(1200, this, [this] { startMcpServer(); });
+  }
+
   statusBar()->showMessage("Ready");
 }
 
 MainWindow::~MainWindow() {
+  if (mcpServerProcess_ && mcpServerProcess_->state() != QProcess::NotRunning) {
+    mcpStopRequested_ = true;
+    mcpServerProcess_->terminate();
+    if (!mcpServerProcess_->waitForFinished(1200)) {
+      mcpServerProcess_->kill();
+      (void)mcpServerProcess_->waitForFinished(400);
+    }
+  }
   clearPendingUploadFlow();
   stopRefreshProcesses();
   stopPortWatcher();
@@ -1391,6 +1405,8 @@ void MainWindow::createActions() {
   actionContextSnapshotsMode_->setCheckable(true);
   actionContextGithubMode_ = new QAction(tr("GitHub"), this);
   actionContextGithubMode_->setCheckable(true);
+  actionContextMcpMode_ = new QAction(tr("MCP"), this);
+  actionContextMcpMode_->setCheckable(true);
 
   actionSnapshotCapture_ = new QAction(tr("Capture"), this);
   actionSnapshotCompare_ = new QAction(tr("Compare"), this);
@@ -1399,6 +1415,22 @@ void MainWindow::createActions() {
   actionGitInitRepo_ = new QAction(tr("Init Repo"), this);
   actionGitCommit_ = new QAction(tr("Commit"), this);
   actionGitPush_ = new QAction(tr("Push"), this);
+  actionMcpConfigure_ = new QAction(tr("Configure"), this);
+  actionMcpStart_ = new QAction(tr("Start"), this);
+  actionMcpStop_ = new QAction(tr("Stop"), this);
+  actionMcpRestart_ = new QAction(tr("Restart"), this);
+  actionMcpAutostart_ = new QAction(tr("Auto-start"), this);
+  actionMcpAutostart_->setCheckable(true);
+  {
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+    mcpServerCommand_ =
+        settings.value(kMcpServerCommandKey).toString().trimmed();
+    const bool mcpAutoStart =
+        settings.value(kMcpAutoStartKey, false).toBool();
+    settings.endGroup();
+    actionMcpAutostart_->setChecked(mcpAutoStart);
+  }
 
   actionSerialMonitor_ = new QAction(tr("Serial Monitor"), this);
   actionSerialMonitor_->setCheckable(true);
@@ -2368,6 +2400,8 @@ void MainWindow::createLayout() {
   actionContextSnapshotsMode_->setToolTip(tr("Snapshots"));
   actionContextGithubMode_->setIcon(themedModeIcon("github", QStyle::SP_DriveNetIcon));
   actionContextGithubMode_->setToolTip(tr("GitHub"));
+  actionContextMcpMode_->setIcon(themedModeIcon("applications-system", QStyle::SP_ComputerIcon));
+  actionContextMcpMode_->setToolTip(tr("MCP"));
 
   actionSnapshotCapture_->setIcon(themedModeIcon("camera-photo", QStyle::SP_DialogSaveButton));
   actionSnapshotCapture_->setToolTip(tr("Capture code snapshot"));
@@ -2383,6 +2417,16 @@ void MainWindow::createLayout() {
   actionGitCommit_->setToolTip(tr("Create a commit for current sketch changes"));
   actionGitPush_->setIcon(themedModeIcon("go-up", QStyle::SP_ArrowUp));
   actionGitPush_->setToolTip(tr("Push current sketch repository to GitHub"));
+  actionMcpConfigure_->setIcon(themedModeIcon("preferences-system", QStyle::SP_FileDialogDetailedView));
+  actionMcpConfigure_->setToolTip(tr("Configure MCP server command"));
+  actionMcpStart_->setIcon(themedModeIcon("media-playback-start", QStyle::SP_MediaPlay));
+  actionMcpStart_->setToolTip(tr("Start MCP server"));
+  actionMcpStop_->setIcon(themedModeIcon("media-playback-stop", QStyle::SP_MediaStop));
+  actionMcpStop_->setToolTip(tr("Stop MCP server"));
+  actionMcpRestart_->setIcon(themedModeIcon("view-refresh", QStyle::SP_BrowserReload));
+  actionMcpRestart_->setToolTip(tr("Restart MCP server"));
+  actionMcpAutostart_->setIcon(themedModeIcon("system-run", QStyle::SP_BrowserReload));
+  actionMcpAutostart_->setToolTip(tr("Start MCP server on launch"));
   connect(actionSnapshotCapture_, &QAction::triggered, this,
           [this] { captureCodeSnapshot(false); });
   connect(actionSnapshotCompare_, &QAction::triggered, this,
@@ -2397,10 +2441,26 @@ void MainWindow::createLayout() {
           &MainWindow::commitCurrentSketchToGit);
   connect(actionGitPush_, &QAction::triggered, this,
           &MainWindow::pushCurrentSketchToRemote);
+  connect(actionMcpConfigure_, &QAction::triggered, this,
+          &MainWindow::configureMcpServer);
+  connect(actionMcpStart_, &QAction::triggered, this,
+          &MainWindow::startMcpServer);
+  connect(actionMcpStop_, &QAction::triggered, this,
+          &MainWindow::stopMcpServer);
+  connect(actionMcpRestart_, &QAction::triggered, this,
+          &MainWindow::restartMcpServer);
+  connect(actionMcpAutostart_, &QAction::toggled, this, [this](bool checked) {
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+    settings.setValue(kMcpAutoStartKey, checked);
+    settings.endGroup();
+    updateMcpUiState();
+  });
 
   contextModeToolBar_->addAction(actionContextFontsMode_);
   contextModeToolBar_->addAction(actionContextSnapshotsMode_);
   contextModeToolBar_->addAction(actionContextGithubMode_);
+  contextModeToolBar_->addAction(actionContextMcpMode_);
 
   if (QWidget* widget = contextModeToolBar_->widgetForAction(actionContextFontsMode_)) {
     widget->setObjectName("ContextModeFontsButton");
@@ -2411,6 +2471,9 @@ void MainWindow::createLayout() {
   if (QWidget* widget = contextModeToolBar_->widgetForAction(actionContextGithubMode_)) {
     widget->setObjectName("ContextModeGithubButton");
   }
+  if (QWidget* widget = contextModeToolBar_->widgetForAction(actionContextMcpMode_)) {
+    widget->setObjectName("ContextModeMcpButton");
+  }
 
   restyleContextModeToolBar();
 
@@ -2419,6 +2482,7 @@ void MainWindow::createLayout() {
   contextModeGroup_->addAction(actionContextFontsMode_);
   contextModeGroup_->addAction(actionContextSnapshotsMode_);
   contextModeGroup_->addAction(actionContextGithubMode_);
+  contextModeGroup_->addAction(actionContextMcpMode_);
   connect(contextModeGroup_, &QActionGroup::triggered, this,
           [this](QAction* action) {
             if (action == actionContextFontsMode_) {
@@ -2427,6 +2491,8 @@ void MainWindow::createLayout() {
               setContextToolbarMode(ContextToolbarMode::Snapshots);
             } else if (action == actionContextGithubMode_) {
               setContextToolbarMode(ContextToolbarMode::Github);
+            } else if (action == actionContextMcpMode_) {
+              setContextToolbarMode(ContextToolbarMode::Mcp);
             }
             if (actionToggleFontToolBar_ && !actionToggleFontToolBar_->isChecked()) {
               actionToggleFontToolBar_->setChecked(true);
@@ -3303,6 +3369,14 @@ bool MainWindow::isFavorite(const QString& fqbn) const {
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
+  if (mcpServerProcess_ && mcpServerProcess_->state() != QProcess::NotRunning) {
+    mcpStopRequested_ = true;
+    mcpServerProcess_->terminate();
+    if (!mcpServerProcess_->waitForFinished(1200)) {
+      mcpServerProcess_->kill();
+      (void)mcpServerProcess_->waitForFinished(400);
+    }
+  }
   stopRefreshProcesses();
   stopLanguageServer();
   if (serialPort_) {
@@ -5729,6 +5803,16 @@ void MainWindow::showCommandPalette() {
           tr("Show/hide serial plotter"));
   addItem(QStringLiteral("openPreferences"), tr("Preferences"),
           tr("Open IDE settings"));
+  addItem(QStringLiteral("configureMcp"), tr("Configure MCP"),
+          tr("Set MCP server command"));
+  addItem(QStringLiteral("startMcp"), tr("Start MCP Server"),
+          tr("Start configured MCP server process"));
+  addItem(QStringLiteral("stopMcp"), tr("Stop MCP Server"),
+          tr("Stop running MCP server process"));
+  addItem(QStringLiteral("restartMcp"), tr("Restart MCP Server"),
+          tr("Restart MCP server process"));
+  addItem(QStringLiteral("showMcpContext"), tr("Show MCP Context Toolbar"),
+          tr("Switch context toolbar to MCP mode"));
 
   dialog->setItems(items);
 
@@ -5771,6 +5855,21 @@ void MainWindow::showCommandPalette() {
     } else if (commandId == QStringLiteral("openPreferences")) {
       if (actionPreferences_) {
         actionPreferences_->trigger();
+      }
+    } else if (commandId == QStringLiteral("configureMcp")) {
+      configureMcpServer();
+    } else if (commandId == QStringLiteral("startMcp")) {
+      startMcpServer();
+    } else if (commandId == QStringLiteral("stopMcp")) {
+      stopMcpServer();
+    } else if (commandId == QStringLiteral("restartMcp")) {
+      restartMcpServer();
+    } else if (commandId == QStringLiteral("showMcpContext")) {
+      setContextToolbarMode(ContextToolbarMode::Mcp);
+      if (actionToggleFontToolBar_ && !actionToggleFontToolBar_->isChecked()) {
+        actionToggleFontToolBar_->setChecked(true);
+      } else if (fontToolBar_) {
+        fontToolBar_->show();
       }
     }
   }
@@ -7432,6 +7531,7 @@ void MainWindow::restyleContextModeToolBar() {
   const QColor fontsAccent = QColor(QStringLiteral("#38bdf8"));
   const QColor snapshotsAccent = QColor(QStringLiteral("#22c55e"));
   const QColor githubAccent = QColor(QStringLiteral("#6366f1"));
+  const QColor mcpAccent = QColor(QStringLiteral("#f59e0b"));
 
   const QColor barBackground = blendColors(
       panelColor, pal.color(QPalette::Base), darkTheme ? 0.22 : 0.06);
@@ -7445,6 +7545,8 @@ void MainWindow::restyleContextModeToolBar() {
       blendColors(barBackground, snapshotsAccent, darkTheme ? 0.55 : 0.34);
   const QColor githubChecked =
       blendColors(barBackground, githubAccent, darkTheme ? 0.55 : 0.34);
+  const QColor mcpChecked =
+      blendColors(barBackground, mcpAccent, darkTheme ? 0.55 : 0.34);
   const QColor checkedText = readableForeground(fontsChecked);
 
   contextModeToolBar_->setStyleSheet(QString(
@@ -7476,22 +7578,30 @@ void MainWindow::restyleContextModeToolBar() {
       "QToolBar#ContextModeBar QToolButton#ContextModeGithubButton {"
       "  border-right: 3px solid %7;"
       "}"
+      "QToolBar#ContextModeBar QToolButton#ContextModeMcpButton {"
+      "  border-right: 3px solid %8;"
+      "}"
       "QToolBar#ContextModeBar QToolButton#ContextModeFontsButton:checked {"
-      "  background-color: %8;"
-      "  color: %11;"
+      "  background-color: %9;"
+      "  color: %13;"
       "}"
       "QToolBar#ContextModeBar QToolButton#ContextModeSnapshotsButton:checked {"
-      "  background-color: %9;"
-      "  color: %11;"
+      "  background-color: %10;"
+      "  color: %13;"
       "}"
       "QToolBar#ContextModeBar QToolButton#ContextModeGithubButton:checked {"
-      "  background-color: %10;"
-      "  color: %11;"
+      "  background-color: %11;"
+      "  color: %13;"
+      "}"
+      "QToolBar#ContextModeBar QToolButton#ContextModeMcpButton:checked {"
+      "  background-color: %12;"
+      "  color: %13;"
       "}")
       .arg(colorHex(barBackground), colorHex(barBorder), colorHex(textColor),
            colorHex(hoverBackground), colorHex(fontsAccent), colorHex(snapshotsAccent),
-           colorHex(githubAccent), colorHex(fontsChecked), colorHex(snapshotsChecked),
-           colorHex(githubChecked), colorHex(checkedText)));
+           colorHex(githubAccent), colorHex(mcpAccent), colorHex(fontsChecked),
+           colorHex(snapshotsChecked), colorHex(githubChecked), colorHex(mcpChecked),
+           colorHex(checkedText)));
 }
 
 void MainWindow::syncContextModeSelection(bool contextVisible) {
@@ -7505,6 +7615,7 @@ void MainWindow::syncContextModeSelection(bool contextVisible) {
     if (actionContextFontsMode_) actionContextFontsMode_->setChecked(false);
     if (actionContextSnapshotsMode_) actionContextSnapshotsMode_->setChecked(false);
     if (actionContextGithubMode_) actionContextGithubMode_->setChecked(false);
+    if (actionContextMcpMode_) actionContextMcpMode_->setChecked(false);
     contextModeGroup_->setExclusive(wasExclusive);
     return;
   }
@@ -7512,7 +7623,8 @@ void MainWindow::syncContextModeSelection(bool contextVisible) {
   const bool hasCheckedAction =
       (actionContextFontsMode_ && actionContextFontsMode_->isChecked()) ||
       (actionContextSnapshotsMode_ && actionContextSnapshotsMode_->isChecked()) ||
-      (actionContextGithubMode_ && actionContextGithubMode_->isChecked());
+      (actionContextGithubMode_ && actionContextGithubMode_->isChecked()) ||
+      (actionContextMcpMode_ && actionContextMcpMode_->isChecked());
   if (hasCheckedAction) {
     return;
   }
@@ -7527,6 +7639,9 @@ void MainWindow::syncContextModeSelection(bool contextVisible) {
       break;
     case ContextToolbarMode::Github:
       modeAction = actionContextGithubMode_;
+      break;
+    case ContextToolbarMode::Mcp:
+      modeAction = actionContextMcpMode_;
       break;
   }
   if (modeAction) {
@@ -7580,9 +7695,14 @@ void MainWindow::rebuildContextToolbar() {
     const QSignalBlocker blocker(actionContextGithubMode_);
     actionContextGithubMode_->setChecked(contextToolbarMode_ == ContextToolbarMode::Github);
   }
+  if (actionContextMcpMode_) {
+    const QSignalBlocker blocker(actionContextMcpMode_);
+    actionContextMcpMode_->setChecked(contextToolbarMode_ == ContextToolbarMode::Mcp);
+  }
 
   fontFamilyCombo_ = nullptr;
   fontSizeCombo_ = nullptr;
+  mcpStatusLabel_ = nullptr;
   fontToolBar_->clear();
   restyleContextModeToolBar();
 
@@ -7607,6 +7727,10 @@ void MainWindow::rebuildContextToolbar() {
     case ContextToolbarMode::Github:
       title = tr("GitHub");
       modeAccent = QColor(QStringLiteral("#6366f1"));
+      break;
+    case ContextToolbarMode::Mcp:
+      title = tr("MCP");
+      modeAccent = QColor(QStringLiteral("#f59e0b"));
       break;
   }
 
@@ -7749,11 +7873,263 @@ void MainWindow::rebuildContextToolbar() {
     fontToolBar_->addAction(actionGitInitRepo_);
     fontToolBar_->addAction(actionGitCommit_);
     fontToolBar_->addAction(actionGitPush_);
+  } else if (contextToolbarMode_ == ContextToolbarMode::Mcp) {
+    fontToolBar_->addAction(actionMcpConfigure_);
+    fontToolBar_->addAction(actionMcpStart_);
+    fontToolBar_->addAction(actionMcpStop_);
+    fontToolBar_->addAction(actionMcpRestart_);
+    fontToolBar_->addAction(actionMcpAutostart_);
+    fontToolBar_->addSeparator();
+    mcpStatusLabel_ = new QLabel(fontToolBar_);
+    mcpStatusLabel_->setObjectName("ContextMcpStatusLabel");
+    fontToolBar_->addWidget(mcpStatusLabel_);
+    updateMcpUiState();
   }
 
   QWidget* spacer = new QWidget(fontToolBar_);
   spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
   fontToolBar_->addWidget(spacer);
+}
+
+void MainWindow::configureMcpServer() {
+  QDialog dialog(this);
+  dialog.setWindowTitle(tr("MCP Server Settings"));
+  dialog.setMinimumWidth(620);
+
+  auto* commandEdit = new QLineEdit(&dialog);
+  commandEdit->setClearButtonEnabled(true);
+  commandEdit->setText(mcpServerCommand_);
+  commandEdit->setPlaceholderText(
+      tr("e.g. npx -y @modelcontextprotocol/server-filesystem %1")
+          .arg(QDir::homePath()));
+
+  auto* autoStartCheck =
+      new QCheckBox(tr("Start MCP server automatically on launch"), &dialog);
+  autoStartCheck->setChecked(actionMcpAutostart_ &&
+                             actionMcpAutostart_->isChecked());
+
+  auto* hintLabel = new QLabel(
+      tr("Use the exact command used to launch your MCP stdio server."),
+      &dialog);
+  hintLabel->setWordWrap(true);
+  hintLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+  auto* form = new QFormLayout();
+  form->addRow(tr("Command:"), commandEdit);
+
+  auto* buttons = new QDialogButtonBox(
+      QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+  connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+  connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+  auto* layout = new QVBoxLayout(&dialog);
+  layout->addLayout(form);
+  layout->addWidget(autoStartCheck);
+  layout->addWidget(hintLabel);
+  layout->addStretch(1);
+  layout->addWidget(buttons);
+
+  if (dialog.exec() != QDialog::Accepted) {
+    return;
+  }
+
+  const QString oldCommand = mcpServerCommand_;
+  mcpServerCommand_ = commandEdit->text().trimmed();
+  const bool autoStart = autoStartCheck->isChecked();
+
+  QSettings settings;
+  settings.beginGroup(kSettingsGroup);
+  if (mcpServerCommand_.isEmpty()) {
+    settings.remove(kMcpServerCommandKey);
+  } else {
+    settings.setValue(kMcpServerCommandKey, mcpServerCommand_);
+  }
+  settings.setValue(kMcpAutoStartKey, autoStart);
+  settings.endGroup();
+
+  if (actionMcpAutostart_) {
+    const QSignalBlocker blocker(actionMcpAutostart_);
+    actionMcpAutostart_->setChecked(autoStart);
+  }
+
+  updateMcpUiState();
+  if (mcpServerCommand_.isEmpty()) {
+    showToast(tr("MCP command cleared"));
+  } else if (oldCommand != mcpServerCommand_ &&
+             mcpServerProcess_ &&
+             mcpServerProcess_->state() != QProcess::NotRunning) {
+    showToast(tr("MCP command updated. Restart server to apply."));
+  } else {
+    showToast(tr("MCP settings updated"));
+  }
+}
+
+void MainWindow::startMcpServer() {
+  if (mcpServerProcess_ &&
+      mcpServerProcess_->state() != QProcess::NotRunning) {
+    updateMcpUiState();
+    return;
+  }
+
+  const QString command = mcpServerCommand_.trimmed();
+  if (command.isEmpty()) {
+    showToastWithAction(
+        tr("MCP command is not configured."),
+        tr("Configure"),
+        [this] { configureMcpServer(); },
+        6500);
+    updateMcpUiState();
+    return;
+  }
+
+  QStringList parts = QProcess::splitCommand(command);
+  if (parts.isEmpty()) {
+    showToast(tr("Invalid MCP command"));
+    updateMcpUiState();
+    return;
+  }
+
+  const QString program = parts.takeFirst();
+  if (!mcpServerProcess_) {
+    mcpServerProcess_ = new QProcess(this);
+    mcpServerProcess_->setProcessChannelMode(QProcess::SeparateChannels);
+
+    connect(mcpServerProcess_, &QProcess::started, this, [this] {
+      if (output_) {
+        output_->appendLine(tr("[MCP] Server started (pid %1)")
+                                .arg(QString::number(
+                                    static_cast<qulonglong>(
+                                        mcpServerProcess_->processId()))));
+      }
+      updateMcpUiState();
+    });
+
+    connect(mcpServerProcess_, &QProcess::readyReadStandardOutput, this, [this] {
+      if (!mcpServerProcess_ || !output_) {
+        return;
+      }
+      const QString text =
+          QString::fromUtf8(mcpServerProcess_->readAllStandardOutput())
+              .replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+      const QStringList lines = text.split(QLatin1Char('\n'));
+      for (const QString& line : lines) {
+        if (!line.trimmed().isEmpty()) {
+          output_->appendLine(tr("[MCP] %1").arg(line.trimmed()));
+        }
+      }
+    });
+
+    connect(mcpServerProcess_, &QProcess::readyReadStandardError, this, [this] {
+      if (!mcpServerProcess_ || !output_) {
+        return;
+      }
+      const QString text =
+          QString::fromUtf8(mcpServerProcess_->readAllStandardError())
+              .replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+      const QStringList lines = text.split(QLatin1Char('\n'));
+      for (const QString& line : lines) {
+        if (!line.trimmed().isEmpty()) {
+          output_->appendLine(tr("[MCP] %1").arg(line.trimmed()));
+        }
+      }
+    });
+
+    connect(mcpServerProcess_,
+            &QProcess::errorOccurred,
+            this,
+            [this](QProcess::ProcessError err) {
+              if (!mcpStopRequested_) {
+                showToast(tr("MCP server error (%1)")
+                              .arg(QString::number(static_cast<int>(err))));
+              }
+              updateMcpUiState();
+            });
+
+    connect(
+        mcpServerProcess_,
+        QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+        this,
+        [this](int exitCode, QProcess::ExitStatus exitStatus) {
+          if (output_) {
+            output_->appendLine(
+                tr("[MCP] Server stopped (exit code %1, %2)")
+                    .arg(exitCode)
+                    .arg(exitStatus == QProcess::NormalExit ? tr("normal exit")
+                                                            : tr("crashed")));
+          }
+          if (!mcpStopRequested_) {
+            showToast(tr("MCP server stopped"));
+          }
+          mcpStopRequested_ = false;
+          updateMcpUiState();
+        });
+  }
+
+  mcpStopRequested_ = false;
+  if (output_) {
+    output_->appendLine(tr("[MCP] Starting: %1").arg(command));
+  }
+  mcpServerProcess_->start(program, parts);
+  updateMcpUiState();
+}
+
+void MainWindow::stopMcpServer() {
+  if (!mcpServerProcess_ || mcpServerProcess_->state() == QProcess::NotRunning) {
+    updateMcpUiState();
+    return;
+  }
+
+  mcpStopRequested_ = true;
+  mcpServerProcess_->terminate();
+  if (!mcpServerProcess_->waitForFinished(1200)) {
+    mcpServerProcess_->kill();
+    (void)mcpServerProcess_->waitForFinished(400);
+  }
+  updateMcpUiState();
+}
+
+void MainWindow::restartMcpServer() {
+  if (mcpServerProcess_ && mcpServerProcess_->state() != QProcess::NotRunning) {
+    stopMcpServer();
+  }
+  startMcpServer();
+}
+
+void MainWindow::updateMcpUiState() {
+  const bool running =
+      mcpServerProcess_ && mcpServerProcess_->state() != QProcess::NotRunning;
+  const bool hasCommand = !mcpServerCommand_.trimmed().isEmpty();
+
+  if (actionMcpStart_) {
+    actionMcpStart_->setEnabled(hasCommand && !running);
+  }
+  if (actionMcpStop_) {
+    actionMcpStop_->setEnabled(running);
+  }
+  if (actionMcpRestart_) {
+    actionMcpRestart_->setEnabled(hasCommand);
+  }
+  if (actionMcpAutostart_) {
+    actionMcpAutostart_->setEnabled(hasCommand || actionMcpAutostart_->isChecked());
+  }
+
+  if (!mcpStatusLabel_) {
+    return;
+  }
+
+  if (!hasCommand) {
+    mcpStatusLabel_->setText(tr("Status: not configured"));
+    return;
+  }
+  if (!running) {
+    mcpStatusLabel_->setText(tr("Status: stopped"));
+    return;
+  }
+
+  mcpStatusLabel_->setText(
+      tr("Status: running (pid %1)")
+          .arg(QString::number(
+              static_cast<qulonglong>(mcpServerProcess_->processId()))));
 }
 
 QHash<QString, QByteArray> MainWindow::snapshotFileOverridesForSketch(

@@ -23,6 +23,7 @@ A native Qt6 Arduino-compatible IDE for Linux. Rewritto-ide is a lightweight, El
 - **Find in Files**: Search across all files with context previews
 - **Session Restore**: Automatically reopen last sketch with cursor positions
 - **Recent Sketches**: Pin/unpin sketches with persistent history
+- **MCP Toolbar**: Configure/start/stop an MCP stdio server from the context toolbar
 - **Themes**: Dark/Light theme support with system integration
 - **Interface Scaling**: Configurable UI scaling for HiDPI displays
 
