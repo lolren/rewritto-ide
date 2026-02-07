@@ -71,7 +71,7 @@ ensure_arduino_language_server() {
   local dest_bin="${dest_dir}/arduino-language-server"
   if [[ ! -x "${dest_bin}" ]]; then
     mkdir -p "${dest_dir}"
-    echo "Downloading arduino-language-server ${ALS_VERSION}"
+    echo "Downloading arduino-language-server ${ALS_VERSION}" >&2
     curl -L -o "${dest_dir}/als.tgz" "${ALS_URL}"
     tar -xzf "${dest_dir}/als.tgz" -C "${dest_dir}"
     chmod +x "${dest_bin}"
@@ -84,7 +84,7 @@ ensure_arduino_cli() {
   local dest_bin="${dest_dir}/arduino-cli"
   if [[ ! -x "${dest_bin}" ]]; then
     mkdir -p "${dest_dir}"
-    echo "Downloading arduino-cli"
+    echo "Downloading arduino-cli" >&2
     curl -L -o "${dest_dir}/arduino-cli.tgz" "${ARDUINO_CLI_URL}"
     tar -xzf "${dest_dir}/arduino-cli.tgz" -C "${dest_dir}"
     chmod +x "${dest_bin}"
