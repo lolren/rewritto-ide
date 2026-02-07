@@ -5,13 +5,34 @@
 # You can edit your runtime copy at:
 #   /home/rewritto/additional-boards.txt
 
-https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+# Espressif ESP32
+https://espressif.github.io/arduino-esp32/package_esp32_index.json
+
+# ESP8266 Community
 https://arduino.esp8266.com/stable/package_esp8266com_index.json
+
+# Adafruit (includes nRF52, SAMD, AVR, WICED)
 https://adafruit.github.io/arduino-board-index/package_adafruit_index.json
+
+# Raspberry Pi RP2040 (arduino-pico)
 https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+
+# STM32 Official Core
 https://github.com/stm32duino/BoardManagerFiles/raw/main/package_stmicroelectronics_index.json
+
+# PJRC Teensy
 https://www.pjrc.com/teensy/package_teensy_index.json
+
+# SparkFun Boards
+https://raw.githubusercontent.com/sparkfun/Arduino_Boards/main/IDE_Board_Manager/package_sparkfun_index.json
+
+# Seeed Studio (XIAO and more)
+https://files.seeedstudio.com/arduino/package_seeeduino_boards_index.json
+
+# Spence Konde cores (ATTinyCore, megaTinyCore, DxCore)
 https://drazzy.com/package_drazzy.com_index.json
+
+# MCUdude cores
 https://mcudude.github.io/MegaCore/package_MCUdude_MegaCore_index.json
 https://mcudude.github.io/MiniCore/package_MCUdude_MiniCore_index.json
 https://mcudude.github.io/MightyCore/package_MCUdude_MightyCore_index.json

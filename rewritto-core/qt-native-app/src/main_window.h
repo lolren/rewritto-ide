@@ -395,7 +395,6 @@ class MainWindow final : public QMainWindow {
   void updateWelcomeVisibility();
   void maybeRunBoardSetupWizard();
   void runBoardSetupWizard();
-  QStringList loadAdditionalBoardUrlsPresets() const;
   bool mergeAdditionalBoardUrlsIntoPreferences(
       QStringList urlsToMerge,
       QString* outError = nullptr,

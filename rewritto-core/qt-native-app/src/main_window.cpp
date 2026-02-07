@@ -40,10 +40,12 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QButtonGroup>
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QColor>
 #include <QComboBox>
+#include <QCommandLinkButton>
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDockWidget>
@@ -72,6 +74,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QHeaderView>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -83,6 +86,7 @@
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QRadioButton>
 #include <QScrollBar>
 #include <QSaveFile>
 #include <QSortFilterProxyModel>
@@ -114,6 +118,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QWizard>
 
 #ifndef REWRITTO_IDE_VERSION
 #define REWRITTO_IDE_VERSION "0.4.0"
@@ -158,6 +163,580 @@ constexpr int kPortRoleProtocol = Qt::UserRole + 303;
 constexpr int kPortRoleMissing = Qt::UserRole + 304;
 
 constexpr int kRoleIsFavorite = Qt::UserRole + 1;
+
+QStringList normalizeStringList(QStringList values);
+QStringList parseAdditionalBoardsText(const QString& text);
+
+enum BoardSetupWizardPageId {
+  kBoardWizardPageMode = 0,
+  kBoardWizardPagePresets = 1,
+  kBoardWizardPageCustom = 2,
+  kBoardWizardPageReview = 3,
+};
+
+struct BoardSetupPreset final {
+  QString id;
+  QString name;
+  QString description;
+  QString url;
+  QStringList recommendedCores;
+  QString themeIconName;
+  QStyle::StandardPixmap fallbackIcon = QStyle::SP_ComputerIcon;
+  bool defaultSelected = false;
+};
+
+QIcon boardSetupPresetIcon(const BoardSetupPreset& preset, const QWidget* widget) {
+  const QIcon themed = QIcon::fromTheme(preset.themeIconName.trimmed());
+  if (!themed.isNull()) {
+    return themed;
+  }
+  const QStyle* style = widget ? widget->style() : QApplication::style();
+  return style ? style->standardIcon(preset.fallbackIcon) : QIcon{};
+}
+
+QStringList parseBoardSetupCoreIdsText(QString text) {
+  text.replace(QLatin1Char(','), QLatin1Char('\n'));
+  text.replace(QLatin1Char(';'), QLatin1Char('\n'));
+  return normalizeStringList(text.split(QLatin1Char('\n')));
+}
+
+QVector<BoardSetupPreset> boardSetupPresetCatalog() {
+  return {
+      {
+          QStringLiteral("esp32"),
+          QObject::tr("Espressif ESP32"),
+          QObject::tr("ESP32 family (ESP32, S2, S3, C3, C6, H2, P4)."),
+          QStringLiteral(
+              "https://espressif.github.io/arduino-esp32/package_esp32_index.json"),
+          {QStringLiteral("esp32:esp32")},
+          QStringLiteral("network-wireless"),
+          QStyle::SP_DriveNetIcon,
+          true,
+      },
+      {
+          QStringLiteral("esp8266"),
+          QObject::tr("ESP8266 Community"),
+          QObject::tr("ESP8266 boards from the official community core."),
+          QStringLiteral("https://arduino.esp8266.com/stable/package_esp8266com_index.json"),
+          {QStringLiteral("esp8266:esp8266")},
+          QStringLiteral("network-wireless"),
+          QStyle::SP_DriveNetIcon,
+          true,
+      },
+      {
+          QStringLiteral("rp2040"),
+          QObject::tr("Raspberry Pi RP2040 (arduino-pico)"),
+          QObject::tr("Raspberry Pi Pico and RP2040-compatible boards."),
+          QStringLiteral(
+              "https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json"),
+          {QStringLiteral("rp2040:rp2040")},
+          QStringLiteral("cpu"),
+          QStyle::SP_ComputerIcon,
+          true,
+      },
+      {
+          QStringLiteral("stm32"),
+          QObject::tr("STM32 Official Core"),
+          QObject::tr("STMicroelectronics STM32 boards."),
+          QStringLiteral(
+              "https://github.com/stm32duino/BoardManagerFiles/raw/main/package_stmicroelectronics_index.json"),
+          {QStringLiteral("STMicroelectronics:stm32")},
+          QStringLiteral("applications-engineering"),
+          QStyle::SP_DesktopIcon,
+          true,
+      },
+      {
+          QStringLiteral("nrf52"),
+          QObject::tr("Adafruit nRF52 + SAMD"),
+          QObject::tr("Adafruit boards, including Feather nRF52 and many SAMD boards."),
+          QStringLiteral("https://adafruit.github.io/arduino-board-index/package_adafruit_index.json"),
+          {QStringLiteral("adafruit:nrf52"), QStringLiteral("adafruit:samd")},
+          QStringLiteral("bluetooth"),
+          QStyle::SP_DriveHDIcon,
+          true,
+      },
+      {
+          QStringLiteral("teensy"),
+          QObject::tr("PJRC Teensy"),
+          QObject::tr("Teensy boards (Teensy 4.x and others)."),
+          QStringLiteral("https://www.pjrc.com/teensy/package_teensy_index.json"),
+          {QStringLiteral("teensy:avr")},
+          QStringLiteral("media-flash"),
+          QStyle::SP_DriveFDIcon,
+          true,
+      },
+      {
+          QStringLiteral("sparkfun"),
+          QObject::tr("SparkFun Boards"),
+          QObject::tr("SparkFun cores (AVR, SAMD, nRF52, Apollo3, ESP, STM32)."),
+          QStringLiteral(
+              "https://raw.githubusercontent.com/sparkfun/Arduino_Boards/main/IDE_Board_Manager/package_sparkfun_index.json"),
+          {QStringLiteral("SparkFun:nrf52"), QStringLiteral("SparkFun:apollo3")},
+          QStringLiteral("applications-engineering"),
+          QStyle::SP_DriveHDIcon,
+          false,
+      },
+      {
+          QStringLiteral("seeed"),
+          QObject::tr("Seeed Studio (XIAO and more)"),
+          QObject::tr("Seeed cores including nRF52, SAMD, STM32, mbed and others."),
+          QStringLiteral("https://files.seeedstudio.com/arduino/package_seeeduino_boards_index.json"),
+          {QStringLiteral("Seeeduino:nrf52"), QStringLiteral("Seeeduino:samd")},
+          QStringLiteral("applications-engineering"),
+          QStyle::SP_DriveHDIcon,
+          false,
+      },
+      {
+          QStringLiteral("attinycore"),
+          QObject::tr("ATTinyCore"),
+          QObject::tr("Classic ATtiny support from Spence Konde."),
+          QStringLiteral("http://drazzy.com/package_drazzy.com_index.json"),
+          {QStringLiteral("ATTinyCore:avr")},
+          QStringLiteral("cpu"),
+          QStyle::SP_FileDialogDetailedView,
+          false,
+      },
+      {
+          QStringLiteral("megatinycore"),
+          QObject::tr("megaTinyCore"),
+          QObject::tr("ATtiny 0/1/2-series support from Spence Konde."),
+          QStringLiteral("http://drazzy.com/package_drazzy.com_index.json"),
+          {QStringLiteral("megaTinyCore:megaavr")},
+          QStringLiteral("cpu"),
+          QStyle::SP_FileDialogDetailedView,
+          false,
+      },
+      {
+          QStringLiteral("megacore"),
+          QObject::tr("MCUdude MegaCore"),
+          QObject::tr("ATmega chips beyond default AVR support."),
+          QStringLiteral("https://mcudude.github.io/MegaCore/package_MCUdude_MegaCore_index.json"),
+          {QStringLiteral("MegaCore:avr")},
+          QStringLiteral("cpu"),
+          QStyle::SP_FileDialogListView,
+          false,
+      },
+      {
+          QStringLiteral("minicore"),
+          QObject::tr("MCUdude MiniCore"),
+          QObject::tr("ATmega8/48/88/168/328 family support."),
+          QStringLiteral("https://mcudude.github.io/MiniCore/package_MCUdude_MiniCore_index.json"),
+          {QStringLiteral("MiniCore:avr")},
+          QStringLiteral("cpu"),
+          QStyle::SP_FileDialogListView,
+          false,
+      },
+      {
+          QStringLiteral("mightycore"),
+          QObject::tr("MCUdude MightyCore"),
+          QObject::tr("ATmega16/32/64/128 family support."),
+          QStringLiteral(
+              "https://mcudude.github.io/MightyCore/package_MCUdude_MightyCore_index.json"),
+          {QStringLiteral("MightyCore:avr")},
+          QStringLiteral("cpu"),
+          QStyle::SP_FileDialogListView,
+          false,
+      },
+      {
+          QStringLiteral("microcore"),
+          QObject::tr("MCUdude MicroCore"),
+          QObject::tr("ATtiny13 support."),
+          QStringLiteral(
+              "https://mcudude.github.io/MicroCore/package_MCUdude_MicroCore_index.json"),
+          {QStringLiteral("MicroCore:avr")},
+          QStringLiteral("cpu"),
+          QStyle::SP_FileDialogListView,
+          false,
+      },
+  };
+}
+
+class BoardSetupModePage final : public QWizardPage {
+ public:
+  explicit BoardSetupModePage(QWidget* parent = nullptr) : QWizardPage(parent) {
+    setTitle(QObject::tr("Choose Setup Mode"));
+    setSubTitle(QObject::tr("Pick a preset catalog or add your own board manager URL."));
+
+    auto* layout = new QVBoxLayout(this);
+
+    const QString cardStyle = QStringLiteral(
+        "QCommandLinkButton { border: 1px solid palette(mid); border-radius: 10px; "
+        "padding: 12px; text-align: left; }"
+        "QCommandLinkButton:checked { border: 2px solid palette(highlight); "
+        "background-color: palette(alternate-base); }");
+
+    presetButton_ = new QCommandLinkButton(
+        QObject::tr("Browse Presets"),
+        QObject::tr("Choose from curated popular cores (ESP32, nRF52, STM32, RP2040, Teensy, etc.)."),
+        this);
+    presetButton_->setCheckable(true);
+    presetButton_->setIcon(style()->standardIcon(QStyle::SP_DriveNetIcon));
+    presetButton_->setStyleSheet(cardStyle);
+
+    customButton_ = new QCommandLinkButton(
+        QObject::tr("Add Custom URL"),
+        QObject::tr("Paste one or more additional board manager URLs and optional core IDs."),
+        this);
+    customButton_->setCheckable(true);
+    customButton_->setIcon(style()->standardIcon(QStyle::SP_DialogOpenButton));
+    customButton_->setStyleSheet(cardStyle);
+
+    auto* modeGroup = new QButtonGroup(this);
+    modeGroup->setExclusive(true);
+    modeGroup->addButton(presetButton_);
+    modeGroup->addButton(customButton_);
+    presetButton_->setChecked(true);
+
+    connect(modeGroup, &QButtonGroup::buttonToggled, this,
+            [this](QAbstractButton*, bool) { emit completeChanged(); });
+
+    layout->addWidget(presetButton_);
+    layout->addWidget(customButton_);
+    layout->addStretch(1);
+  }
+
+  int nextId() const override {
+    return customButton_ && customButton_->isChecked() ? kBoardWizardPageCustom
+                                                       : kBoardWizardPagePresets;
+  }
+
+ private:
+  QCommandLinkButton* presetButton_ = nullptr;
+  QCommandLinkButton* customButton_ = nullptr;
+};
+
+class BoardSetupPresetPage final : public QWizardPage {
+ public:
+  explicit BoardSetupPresetPage(QVector<BoardSetupPreset> presets,
+                                QWidget* parent = nullptr)
+      : QWizardPage(parent), presets_(std::move(presets)) {
+    setTitle(QObject::tr("Browse Presets"));
+    setSubTitle(QObject::tr("Select one or more presets. Each preset shows its exact URL."));
+
+    auto* layout = new QVBoxLayout(this);
+
+    filterEdit_ = new QLineEdit(this);
+    filterEdit_->setPlaceholderText(QObject::tr("Filter presets (name, URL, board family)..."));
+    layout->addWidget(filterEdit_);
+
+    presetTree_ = new QTreeWidget(this);
+    presetTree_->setHeaderLabels({QObject::tr("Preset"), QObject::tr("Details")});
+    presetTree_->setRootIsDecorated(true);
+    presetTree_->setAlternatingRowColors(true);
+    presetTree_->setSelectionMode(QAbstractItemView::NoSelection);
+    presetTree_->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    presetTree_->header()->setSectionResizeMode(1, QHeaderView::Stretch);
+    layout->addWidget(presetTree_, 1);
+
+    auto* controlsLayout = new QHBoxLayout();
+    auto* selectPopularButton = new QPushButton(QObject::tr("Select Popular"), this);
+    auto* selectAllButton = new QPushButton(QObject::tr("Select All"), this);
+    auto* clearButton = new QPushButton(QObject::tr("Clear"), this);
+    controlsLayout->addWidget(selectPopularButton);
+    controlsLayout->addWidget(selectAllButton);
+    controlsLayout->addWidget(clearButton);
+    controlsLayout->addStretch(1);
+    layout->addLayout(controlsLayout);
+
+    rebuildTree();
+
+    connect(filterEdit_, &QLineEdit::textChanged, this,
+            [this](const QString& value) { applyFilter(value); });
+    connect(presetTree_, &QTreeWidget::itemChanged, this,
+            [this](QTreeWidgetItem* item, int) {
+              if (!item || item->parent() != nullptr) {
+                return;
+              }
+              emit completeChanged();
+            });
+
+    connect(selectPopularButton, &QPushButton::clicked, this, [this] {
+      for (int i = 0; i < presetTree_->topLevelItemCount(); ++i) {
+        QTreeWidgetItem* item = presetTree_->topLevelItem(i);
+        if (!item) {
+          continue;
+        }
+        const int presetIndex = item->data(0, Qt::UserRole).toInt();
+        if (presetIndex >= 0 && presetIndex < presets_.size()) {
+          item->setCheckState(0,
+                              presets_.at(presetIndex).defaultSelected ? Qt::Checked
+                                                                       : Qt::Unchecked);
+        }
+      }
+      emit completeChanged();
+    });
+    connect(selectAllButton, &QPushButton::clicked, this, [this] {
+      for (int i = 0; i < presetTree_->topLevelItemCount(); ++i) {
+        if (QTreeWidgetItem* item = presetTree_->topLevelItem(i)) {
+          item->setCheckState(0, Qt::Checked);
+        }
+      }
+      emit completeChanged();
+    });
+    connect(clearButton, &QPushButton::clicked, this, [this] {
+      for (int i = 0; i < presetTree_->topLevelItemCount(); ++i) {
+        if (QTreeWidgetItem* item = presetTree_->topLevelItem(i)) {
+          item->setCheckState(0, Qt::Unchecked);
+        }
+      }
+      emit completeChanged();
+    });
+  }
+
+  int nextId() const override { return kBoardWizardPageReview; }
+
+  bool isComplete() const override { return !selectedUrls().isEmpty(); }
+
+  QStringList selectedUrls() const {
+    QStringList urls;
+    for (int i = 0; i < presetTree_->topLevelItemCount(); ++i) {
+      const QTreeWidgetItem* item = presetTree_->topLevelItem(i);
+      if (!item || item->checkState(0) != Qt::Checked) {
+        continue;
+      }
+      const int presetIndex = item->data(0, Qt::UserRole).toInt();
+      if (presetIndex >= 0 && presetIndex < presets_.size()) {
+        urls << presets_.at(presetIndex).url;
+      }
+    }
+    return normalizeStringList(urls);
+  }
+
+  QStringList selectedCores() const {
+    QStringList cores;
+    for (int i = 0; i < presetTree_->topLevelItemCount(); ++i) {
+      const QTreeWidgetItem* item = presetTree_->topLevelItem(i);
+      if (!item || item->checkState(0) != Qt::Checked) {
+        continue;
+      }
+      const int presetIndex = item->data(0, Qt::UserRole).toInt();
+      if (presetIndex >= 0 && presetIndex < presets_.size()) {
+        cores.append(presets_.at(presetIndex).recommendedCores);
+      }
+    }
+    return normalizeStringList(cores);
+  }
+
+ private:
+  void rebuildTree() {
+    presetTree_->clear();
+    for (int i = 0; i < presets_.size(); ++i) {
+      const BoardSetupPreset& preset = presets_.at(i);
+
+      auto* presetItem = new QTreeWidgetItem(presetTree_);
+      presetItem->setText(0, preset.name);
+      presetItem->setText(1, preset.description);
+      presetItem->setIcon(0, boardSetupPresetIcon(preset, this));
+      presetItem->setFlags((presetItem->flags() | Qt::ItemIsUserCheckable) &
+                           ~Qt::ItemIsSelectable);
+      presetItem->setCheckState(0, preset.defaultSelected ? Qt::Checked : Qt::Unchecked);
+      presetItem->setData(0, Qt::UserRole, i);
+
+      auto* urlItem = new QTreeWidgetItem(presetItem);
+      urlItem->setText(0, QObject::tr("URL"));
+      urlItem->setText(1, preset.url);
+      urlItem->setIcon(0, style()->standardIcon(QStyle::SP_DialogHelpButton));
+      urlItem->setFlags((urlItem->flags() | Qt::ItemIsSelectable) &
+                        ~Qt::ItemIsUserCheckable);
+
+      auto* coresItem = new QTreeWidgetItem(presetItem);
+      coresItem->setText(0, QObject::tr("Recommended Cores"));
+      coresItem->setText(1, preset.recommendedCores.isEmpty()
+                                ? QObject::tr("(none pre-selected)")
+                                : preset.recommendedCores.join(QStringLiteral(", ")));
+      coresItem->setFlags((coresItem->flags() | Qt::ItemIsSelectable) &
+                          ~Qt::ItemIsUserCheckable);
+
+      presetItem->setExpanded(true);
+    }
+  }
+
+  void applyFilter(QString value) {
+    value = value.trimmed();
+    for (int i = 0; i < presetTree_->topLevelItemCount(); ++i) {
+      QTreeWidgetItem* item = presetTree_->topLevelItem(i);
+      if (!item) {
+        continue;
+      }
+      const int presetIndex = item->data(0, Qt::UserRole).toInt();
+      if (presetIndex < 0 || presetIndex >= presets_.size()) {
+        item->setHidden(false);
+        continue;
+      }
+
+      const BoardSetupPreset& preset = presets_.at(presetIndex);
+      const QString haystack = (preset.name + QLatin1Char('\n') + preset.description +
+                                QLatin1Char('\n') + preset.url +
+                                QLatin1Char('\n') + preset.recommendedCores.join(QLatin1Char(' ')))
+                                   .toLower();
+      const bool visible =
+          value.isEmpty() || haystack.contains(value.toLower());
+      item->setHidden(!visible);
+    }
+  }
+
+  QVector<BoardSetupPreset> presets_;
+  QLineEdit* filterEdit_ = nullptr;
+  QTreeWidget* presetTree_ = nullptr;
+};
+
+class BoardSetupCustomPage final : public QWizardPage {
+ public:
+  explicit BoardSetupCustomPage(QWidget* parent = nullptr) : QWizardPage(parent) {
+    setTitle(QObject::tr("Add Custom Board Manager URL"));
+    setSubTitle(QObject::tr("Paste one or more URLs. One URL per line."));
+
+    auto* layout = new QVBoxLayout(this);
+
+    auto* urlsLabel = new QLabel(QObject::tr("Board manager URL(s)"), this);
+    layout->addWidget(urlsLabel);
+    urlsEdit_ = new QPlainTextEdit(this);
+    urlsEdit_->setPlaceholderText(
+        QStringLiteral("https://example.com/package_vendor_index.json"));
+    urlsEdit_->setMinimumHeight(150);
+    layout->addWidget(urlsEdit_);
+
+    auto* coreLabel = new QLabel(
+        QObject::tr("Optional core IDs to install now (packager:architecture, one per line)"),
+        this);
+    layout->addWidget(coreLabel);
+    coresEdit_ = new QPlainTextEdit(this);
+    coresEdit_->setPlaceholderText(QStringLiteral("esp32:esp32"));
+    coresEdit_->setMaximumHeight(110);
+    layout->addWidget(coresEdit_);
+
+    auto* hintLabel = new QLabel(
+        QObject::tr("Example core IDs: esp32:esp32, STMicroelectronics:stm32, "
+                    "adafruit:nrf52"),
+        this);
+    hintLabel->setWordWrap(true);
+    hintLabel->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    layout->addWidget(hintLabel);
+    layout->addStretch(1);
+
+    connect(urlsEdit_, &QPlainTextEdit::textChanged, this,
+            [this] { emit completeChanged(); });
+  }
+
+  int nextId() const override { return kBoardWizardPageReview; }
+
+  bool isComplete() const override { return !customUrls().isEmpty(); }
+
+  QStringList customUrls() const {
+    return parseAdditionalBoardsText(urlsEdit_->toPlainText());
+  }
+
+  QStringList customCores() const {
+    return parseBoardSetupCoreIdsText(coresEdit_->toPlainText());
+  }
+
+ private:
+  QPlainTextEdit* urlsEdit_ = nullptr;
+  QPlainTextEdit* coresEdit_ = nullptr;
+};
+
+class BoardSetupReviewPage final : public QWizardPage {
+ public:
+  explicit BoardSetupReviewPage(QWidget* parent = nullptr) : QWizardPage(parent) {
+    setTitle(QObject::tr("Review and Apply"));
+    setSubTitle(QObject::tr("Confirm URLs and optional core installations."));
+
+    auto* layout = new QVBoxLayout(this);
+    summaryEdit_ = new QPlainTextEdit(this);
+    summaryEdit_->setReadOnly(true);
+    summaryEdit_->setMinimumHeight(220);
+    layout->addWidget(summaryEdit_, 1);
+
+    installRecommendedCheck_ =
+        new QCheckBox(QObject::tr("Install recommended core(s) now"), this);
+    installRecommendedCheck_->setChecked(true);
+    layout->addWidget(installRecommendedCheck_);
+
+    openBoardsManagerCheck_ =
+        new QCheckBox(QObject::tr("Open Boards Manager after finishing"), this);
+    openBoardsManagerCheck_->setChecked(true);
+    layout->addWidget(openBoardsManagerCheck_);
+  }
+
+  int nextId() const override { return -1; }
+
+  void initializePage() override {
+    const QStringList urls = selectedUrls();
+    const QStringList cores = selectedCores();
+
+    QStringList lines;
+    lines << QObject::tr("Board manager URL(s):");
+    if (urls.isEmpty()) {
+      lines << QObject::tr("  (none)");
+    } else {
+      for (const QString& url : urls) {
+        lines << QStringLiteral("  - %1").arg(url);
+      }
+    }
+    lines << QString{};
+    lines << QObject::tr("Core(s) queued for install:");
+    if (cores.isEmpty()) {
+      lines << QObject::tr("  (none)");
+    } else {
+      for (const QString& core : cores) {
+        lines << QStringLiteral("  - %1").arg(core);
+      }
+    }
+    summaryEdit_->setPlainText(lines.join(QLatin1Char('\n')));
+
+    installRecommendedCheck_->setEnabled(!cores.isEmpty());
+    if (cores.isEmpty()) {
+      installRecommendedCheck_->setChecked(false);
+    }
+  }
+
+  QStringList selectedUrls() const {
+    QStringList urls;
+    if (!wizard()) {
+      return urls;
+    }
+
+    if (const auto* presetPage = dynamic_cast<const BoardSetupPresetPage*>(
+            wizard()->page(kBoardWizardPagePresets))) {
+      urls.append(presetPage->selectedUrls());
+    }
+    if (const auto* customPage = dynamic_cast<const BoardSetupCustomPage*>(
+            wizard()->page(kBoardWizardPageCustom))) {
+      urls.append(customPage->customUrls());
+    }
+    return normalizeStringList(urls);
+  }
+
+  QStringList selectedCores() const {
+    QStringList cores;
+    if (!wizard()) {
+      return cores;
+    }
+
+    if (const auto* presetPage = dynamic_cast<const BoardSetupPresetPage*>(
+            wizard()->page(kBoardWizardPagePresets))) {
+      cores.append(presetPage->selectedCores());
+    }
+    if (const auto* customPage = dynamic_cast<const BoardSetupCustomPage*>(
+            wizard()->page(kBoardWizardPageCustom))) {
+      cores.append(customPage->customCores());
+    }
+    return normalizeStringList(cores);
+  }
+
+  bool installRecommendedNow() const {
+    return installRecommendedCheck_ && installRecommendedCheck_->isChecked();
+  }
+
+  bool openBoardsManagerAfterFinish() const {
+    return openBoardsManagerCheck_ && openBoardsManagerCheck_->isChecked();
+  }
+
+ private:
+  QPlainTextEdit* summaryEdit_ = nullptr;
+  QCheckBox* installRecommendedCheck_ = nullptr;
+  QCheckBox* openBoardsManagerCheck_ = nullptr;
+};
 
 QColor blendColors(const QColor& first, const QColor& second, qreal secondWeight) {
   const qreal clampedWeight = std::clamp(secondWeight, 0.0, 1.0);
@@ -3671,10 +4250,6 @@ void MainWindow::maybeRunBoardSetupWizard() {
   QTimer::singleShot(0, this, [this] { runBoardSetupWizard(); });
 }
 
-QStringList MainWindow::loadAdditionalBoardUrlsPresets() const {
-  return loadSeededAdditionalBoardsUrls();
-}
-
 bool MainWindow::mergeAdditionalBoardUrlsIntoPreferences(
     QStringList urlsToMerge,
     QString* outError,
@@ -3855,92 +4430,43 @@ void MainWindow::runBoardSetupWizard() {
     settings.endGroup();
   };
 
-  QMessageBox modeDialog(this);
-  modeDialog.setIcon(QMessageBox::Information);
-  modeDialog.setWindowTitle(tr("Board Setup Wizard"));
-  modeDialog.setText(tr("No board cores are available yet."));
-  modeDialog.setInformativeText(
-      tr("Choose how you want to configure board support."));
-  QPushButton* presetButton =
-      modeDialog.addButton(tr("Preset Cores"), QMessageBox::AcceptRole);
-  QPushButton* customButton =
-      modeDialog.addButton(tr("Custom Core"), QMessageBox::ActionRole);
-  QPushButton* laterButton =
-      modeDialog.addButton(tr("Later"), QMessageBox::RejectRole);
-  modeDialog.setDefaultButton(presetButton);
-  modeDialog.exec();
+  QWizard wizard(this);
+  wizard.setWindowTitle(tr("Board Setup Wizard"));
+  wizard.setWizardStyle(QWizard::ModernStyle);
+  wizard.setOption(QWizard::NoBackButtonOnStartPage, true);
+  wizard.setOption(QWizard::HaveHelpButton, false);
+  wizard.setButtonText(QWizard::FinishButton, tr("Apply"));
+  wizard.resize(840, 620);
 
-  if (modeDialog.clickedButton() == laterButton ||
-      modeDialog.clickedButton() == nullptr) {
+  auto* modePage = new BoardSetupModePage(&wizard);
+  auto* presetsPage = new BoardSetupPresetPage(boardSetupPresetCatalog(), &wizard);
+  auto* customPage = new BoardSetupCustomPage(&wizard);
+  auto* reviewPage = new BoardSetupReviewPage(&wizard);
+
+  wizard.setPage(kBoardWizardPageMode, modePage);
+  wizard.setPage(kBoardWizardPagePresets, presetsPage);
+  wizard.setPage(kBoardWizardPageCustom, customPage);
+  wizard.setPage(kBoardWizardPageReview, reviewPage);
+  wizard.setStartId(kBoardWizardPageMode);
+
+  if (wizard.exec() != QDialog::Accepted) {
     markWizardHandled();
     return;
   }
 
-  QStringList coreIds;
-  QStringList extraUrls;
-
-  if (modeDialog.clickedButton() == presetButton) {
-    const QStringList presetLabels = {
-        tr("Popular: Arduino AVR + ESP32 + ESP8266 + RP2040"),
-        tr("Arduino Official: AVR + megaAVR + SAMD + mbed Nano"),
-        tr("AVR Only: UNO/Nano/Mega"),
-    };
-    bool ok = false;
-    const QString selected = QInputDialog::getItem(
-        this, tr("Preset Core Bundle"), tr("Select a preset bundle:"),
-        presetLabels, 0, false, &ok);
-    if (!ok || selected.trimmed().isEmpty()) {
-      return;
-    }
-
-    if (selected == presetLabels.at(0)) {
-      coreIds << QStringLiteral("arduino:avr") << QStringLiteral("esp32:esp32")
-              << QStringLiteral("esp8266:esp8266")
-              << QStringLiteral("rp2040:rp2040");
-    } else if (selected == presetLabels.at(1)) {
-      coreIds << QStringLiteral("arduino:avr")
-              << QStringLiteral("arduino:megaavr")
-              << QStringLiteral("arduino:samd")
-              << QStringLiteral("arduino:mbed_nano");
-    } else {
-      coreIds << QStringLiteral("arduino:avr");
-    }
-  } else if (modeDialog.clickedButton() == customButton) {
-    bool coreOk = false;
-    const QString core = QInputDialog::getText(
-        this, tr("Custom Core"), tr("Core ID (packager:architecture):"),
-        QLineEdit::Normal, QStringLiteral("esp32:esp32"), &coreOk);
-    if (!coreOk || core.trimmed().isEmpty()) {
-      return;
-    }
-    if (!core.contains(QLatin1Char(':'))) {
-      QMessageBox::warning(this, tr("Invalid Core ID"),
-                           tr("Expected format: packager:architecture"));
-      return;
-    }
-    coreIds << core.trimmed();
-
-    bool urlOk = false;
-    const QString optionalUrl = QInputDialog::getText(
-        this, tr("Custom Board URL (Optional)"),
-        tr("Additional board manager URL (leave empty to skip):"),
-        QLineEdit::Normal, QString{}, &urlOk);
-    if (urlOk && !optionalUrl.trimmed().isEmpty()) {
-      extraUrls << optionalUrl.trimmed();
-    }
-  }
-
+  QStringList selectedUrls = reviewPage->selectedUrls();
+  QStringList coreIds = reviewPage->selectedCores();
+  selectedUrls = normalizeStringList(selectedUrls);
   coreIds = normalizeStringList(coreIds);
-  if (coreIds.isEmpty()) {
+
+  if (selectedUrls.isEmpty()) {
+    QMessageBox::warning(this, tr("Board Setup"),
+                         tr("No board manager URL was selected."));
     return;
   }
 
-  QStringList presetUrls = loadAdditionalBoardUrlsPresets();
-  presetUrls.append(extraUrls);
-  presetUrls = normalizeStringList(presetUrls);
-
   QString mergedError;
-  if (!mergeAdditionalBoardUrlsIntoPreferences(presetUrls, &mergedError, nullptr)) {
+  if (!mergeAdditionalBoardUrlsIntoPreferences(selectedUrls, &mergedError, nullptr)) {
     QMessageBox::warning(
         this, tr("Board Setup"),
         tr("Could not update board manager URLs.\n\n%1").arg(mergedError));
@@ -3951,29 +4477,28 @@ void MainWindow::runBoardSetupWizard() {
         tr("[Board Setup] %1").arg(mergedError.trimmed()));
   }
 
-  if (QMessageBox::question(
-          this, tr("Install Board Cores"),
-          tr("Install selected cores now?\n\n%1\n\nThis may take a few minutes.")
-              .arg(coreIds.join(QStringLiteral("\n"))),
-          QMessageBox::Yes | QMessageBox::No,
-          QMessageBox::Yes) != QMessageBox::Yes) {
+  if (reviewPage->installRecommendedNow() && !coreIds.isEmpty()) {
+    QString installError;
+    const bool installed = runBoardSetupCoreInstall(coreIds, &installError);
     markWizardHandled();
-    return;
-  }
 
-  QString installError;
-  const bool installed = runBoardSetupCoreInstall(coreIds, &installError);
-  markWizardHandled();
-
-  if (!installed) {
-    QMessageBox::warning(this, tr("Board Setup Failed"), installError);
-    if (actionBoardsManager_) {
-      actionBoardsManager_->trigger();
+    if (!installed) {
+      QMessageBox::warning(this, tr("Board Setup Failed"), installError);
+      if (reviewPage->openBoardsManagerAfterFinish() && actionBoardsManager_) {
+        actionBoardsManager_->trigger();
+      }
+      return;
     }
-    return;
+    showToast(tr("Board setup completed"));
+  } else {
+    markWizardHandled();
+    showToast(tr("Board manager URLs updated"));
   }
 
-  showToast(tr("Board setup completed"));
+  if (reviewPage->openBoardsManagerAfterFinish() && actionBoardsManager_) {
+    actionBoardsManager_->trigger();
+  }
+
   if (boardsManager_) {
     boardsManager_->refresh();
   }

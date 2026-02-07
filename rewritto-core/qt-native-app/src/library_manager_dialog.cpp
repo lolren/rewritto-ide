@@ -404,6 +404,20 @@ LibraryManagerDialog::LibraryManagerDialog(ArduinoCli* arduinoCli,
   wireSignals();
 }
 
+LibraryManagerDialog::~LibraryManagerDialog() {
+  if (!process_) {
+    return;
+  }
+  process_->disconnect(this);
+  if (process_->state() != QProcess::NotRunning) {
+    process_->kill();
+    process_->waitForFinished(250);
+  }
+  delete process_;
+  process_ = nullptr;
+  processOutput_.clear();
+}
+
 bool LibraryManagerDialog::isBusy() const {
   return busy_;
 }

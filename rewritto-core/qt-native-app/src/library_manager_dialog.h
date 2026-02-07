@@ -28,6 +28,7 @@ class LibraryManagerDialog final : public QWidget {
   explicit LibraryManagerDialog(ArduinoCli* arduinoCli,
                                 OutputWidget* output,
                                 QWidget* parent = nullptr);
+  ~LibraryManagerDialog() override;
 
   bool isBusy() const;
 
