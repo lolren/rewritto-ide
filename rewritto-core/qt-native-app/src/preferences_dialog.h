@@ -36,6 +36,7 @@ class PreferencesDialog final : public QDialog {
   QString warningsLevel() const;
   bool verboseCompile() const;
   bool verboseUpload() const;
+  bool checkIndexesOnStartup() const;
 
   // Proxy settings
   QString proxyType() const;
@@ -62,6 +63,7 @@ class PreferencesDialog final : public QDialog {
   void setWarningsLevel(QString level);
   void setVerboseCompile(bool verboseCompile);
   void setVerboseUpload(bool verboseUpload);
+  void setCheckIndexesOnStartup(bool enabled);
 
   // Proxy setters
   void setProxyType(QString type);
@@ -94,6 +96,7 @@ class PreferencesDialog final : public QDialog {
   QComboBox* warningsCombo_ = nullptr;
   QCheckBox* verboseCompileCheck_ = nullptr;
   QCheckBox* verboseUploadCheck_ = nullptr;
+  QCheckBox* checkIndexesOnStartupCheck_ = nullptr;
 
   // Proxy settings widgets
   QTabWidget* tabWidget_ = nullptr;

@@ -325,11 +325,17 @@ PreferencesDialog::PreferencesDialog(QWidget* parent) : QDialog(parent) {
       new QCheckBox(tr("Show verbose output during upload"), this);
   verboseUploadCheck_->setChecked(false);
 
+  checkIndexesOnStartupCheck_ = new QCheckBox(
+      tr("Check for board and library updates on startup (slower startup)"),
+      this);
+  checkIndexesOnStartupCheck_->setChecked(false);
+
   auto* compilationForm = new QFormLayout();
   compilationForm->addRow(tr("Additional Boards Manager URLs:"), additionalUrlsEdit_);
   compilationForm->addRow(tr("Compiler warnings:"), warningsCombo_);
   compilationForm->addRow(QString{}, verboseCompileCheck_);
   compilationForm->addRow(QString{}, verboseUploadCheck_);
+  compilationForm->addRow(QString{}, checkIndexesOnStartupCheck_);
 
   auto* compilationTab = new QWidget(this);
   compilationTab->setLayout(compilationForm);
@@ -441,6 +447,10 @@ bool PreferencesDialog::verboseCompile() const {
 
 bool PreferencesDialog::verboseUpload() const {
   return verboseUploadCheck_->isChecked();
+}
+
+bool PreferencesDialog::checkIndexesOnStartup() const {
+  return checkIndexesOnStartupCheck_ && checkIndexesOnStartupCheck_->isChecked();
 }
 
 void PreferencesDialog::setTheme(QString theme) {
@@ -583,6 +593,12 @@ void PreferencesDialog::setVerboseCompile(bool verboseCompile) {
 
 void PreferencesDialog::setVerboseUpload(bool verboseUpload) {
   verboseUploadCheck_->setChecked(verboseUpload);
+}
+
+void PreferencesDialog::setCheckIndexesOnStartup(bool enabled) {
+  if (checkIndexesOnStartupCheck_) {
+    checkIndexesOnStartupCheck_->setChecked(enabled);
+  }
 }
 
 // Proxy settings getters/setters

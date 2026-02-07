@@ -144,6 +144,7 @@ static constexpr auto kDebugWatchesKey = "debugWatches";
 static constexpr auto kStateVersionKey = "stateVersion";
 static constexpr auto kSketchBoardSelectionsKey = "sketchBoardSelections";
 static constexpr auto kBoardSetupWizardCompletedKey = "boardSetupWizardCompleted";
+static constexpr auto kPrefCheckIndexesOnStartupKey = "checkIndexesOnStartup";
 static constexpr int kCurrentStateVersion = 1;
 
 namespace {
@@ -1744,15 +1745,25 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     refreshConnectedPorts();
   });
 
-  // Background index updates (boards + libraries) when stale.
-  QTimer::singleShot(1000, this, [this] {
-    if (boardsManager_) {
-      boardsManager_->refresh();
-    }
-    if (libraryManager_) {
-      libraryManager_->refresh();
-    }
-  });
+  bool checkIndexesOnStartup = false;
+  {
+    QSettings settings;
+    settings.beginGroup("Preferences");
+    checkIndexesOnStartup =
+        settings.value(kPrefCheckIndexesOnStartupKey, false).toBool();
+    settings.endGroup();
+  }
+  if (checkIndexesOnStartup) {
+    // Optional background index updates (boards + libraries) when stale.
+    QTimer::singleShot(1000, this, [this] {
+      if (boardsManager_) {
+        boardsManager_->refresh();
+      }
+      if (libraryManager_) {
+        libraryManager_->refresh();
+      }
+    });
+  }
 
   if (actionMcpAutostart_ && actionMcpAutostart_->isChecked()) {
     QTimer::singleShot(1200, this, [this] { startMcpServer(); });
@@ -2272,6 +2283,8 @@ void MainWindow::createMenus() {
     dialog->setWarningsLevel(settings.value("compilerWarnings", "none").toString());
     dialog->setVerboseCompile(settings.value("verboseCompile", false).toBool());
     dialog->setVerboseUpload(settings.value("verboseUpload", false).toBool());
+    dialog->setCheckIndexesOnStartup(
+        settings.value(kPrefCheckIndexesOnStartupKey, false).toBool());
 
     // Proxy settings
     dialog->setProxyType(settings.value("proxyType", "none").toString());
@@ -2324,6 +2337,8 @@ void MainWindow::createMenus() {
       settings.setValue("compilerWarnings", dialog->warningsLevel());
       settings.setValue("verboseCompile", dialog->verboseCompile());
       settings.setValue("verboseUpload", dialog->verboseUpload());
+      settings.setValue(kPrefCheckIndexesOnStartupKey,
+                        dialog->checkIndexesOnStartup());
 
       settings.setValue("proxyType", dialog->proxyType());
       settings.setValue("proxyHost", dialog->proxyHost());
