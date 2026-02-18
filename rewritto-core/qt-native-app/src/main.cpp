@@ -20,7 +20,7 @@
 #include <QtGlobal>
 
 #ifndef REWRITTO_IDE_VERSION
-#define REWRITTO_IDE_VERSION "0.4.4"
+#define REWRITTO_IDE_VERSION "0.4.6"
 #endif
 
 namespace {
@@ -270,7 +270,13 @@ int main(int argc, char* argv[]) {
                                             for (const QJsonValue& v : arr) {
                                               paths.push_back(v.toString());
                                             }
-                                            window.openPaths(paths);
+                                            if (paths.isEmpty()) {
+                                              window.showNormal();
+                                              window.raise();
+                                              window.activateWindow();
+                                            } else {
+                                              window.openPaths(paths);
+                                            }
                                           } else {
                                             window.raise();
                                             window.activateWindow();

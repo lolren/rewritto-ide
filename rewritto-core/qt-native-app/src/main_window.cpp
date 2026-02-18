@@ -124,7 +124,7 @@
 #include <QWizard>
 
 #ifndef REWRITTO_IDE_VERSION
-#define REWRITTO_IDE_VERSION "0.4.5"
+#define REWRITTO_IDE_VERSION "0.4.6"
 #endif
 
 static constexpr auto kSettingsGroup = "MainWindow";
