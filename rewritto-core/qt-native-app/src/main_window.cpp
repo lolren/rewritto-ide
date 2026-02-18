@@ -124,7 +124,7 @@
 #include <QWizard>
 
 #ifndef REWRITTO_IDE_VERSION
-#define REWRITTO_IDE_VERSION "0.4.4"
+#define REWRITTO_IDE_VERSION "0.4.5"
 #endif
 
 static constexpr auto kSettingsGroup = "MainWindow";
@@ -4508,7 +4508,8 @@ void MainWindow::createLayout() {
   statusBar()->addPermanentWidget(cliBusy_);
 
   updateStopActionState();
-  defaultDockState_ = saveState();
+  defaultDockState_.clear();
+  QTimer::singleShot(0, this, [this] { defaultDockState_ = saveState(); });
 
   updateWelcomePage();
   updateWelcomeVisibility();
@@ -13315,7 +13316,7 @@ void MainWindow::rebuildContextToolbar() {
       "  margin-right: 6px;"
       "}"
       "QToolBar#ContextToolBar QToolButton {"
-      "  color: %13;"
+      "  color: %11;"
       "  border: 1px solid %5;"
       "  border-radius: 6px;"
       "  background-color: %6;"

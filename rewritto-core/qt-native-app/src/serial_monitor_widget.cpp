@@ -13,6 +13,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
+#include <QPlainTextDocumentLayout>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QSettings>
@@ -84,8 +85,12 @@ SerialMonitorWidget::SerialMonitorWidget(QWidget* parent) : QWidget(parent) {
   output_->setObjectName("serialMonitorOutput");
   output_->setReadOnly(true);
   rawOutputDocument_ = new QTextDocument(output_);
+  rawOutputDocument_->setDocumentLayout(
+      new QPlainTextDocumentLayout(rawOutputDocument_));
   rawOutputDocument_->setMaximumBlockCount(5000);
   filteredOutputDocument_ = new QTextDocument(output_);
+  filteredOutputDocument_->setDocumentLayout(
+      new QPlainTextDocumentLayout(filteredOutputDocument_));
   output_->setDocument(rawOutputDocument_);
 
   input_ = new QLineEdit(this);
