@@ -39,6 +39,7 @@
 #include <limits>
 #include <memory>
 #include <QAbstractButton>
+#include <QAbstractItemView>
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
@@ -64,6 +65,7 @@
 #include <QDateTime>
 #include <QFontDatabase>
 #include <QGuiApplication>
+#include <QHelpEvent>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -91,6 +93,7 @@
 #include <QRegularExpression>
 #include <QRadioButton>
 #include <QScrollBar>
+#include <QScreen>
 #include <QSaveFile>
 #include <QSortFilterProxyModel>
 #include <QSet>
@@ -137,8 +140,12 @@ static constexpr auto kFqbnKey = "fqbn";
 static constexpr auto kPortKey = "port";
 static constexpr auto kProgrammerKey = "programmer";
 static constexpr auto kOptimizeForDebugKey = "optimizeForDebug";
+static constexpr auto kRewrittoSectionAutoUpdateKey = "rewrittoSectionAutoUpdate";
+static constexpr auto kRewrittoSectionCompileTimesKey =
+    "rewrittoSectionLastCompileUtcBySketch";
 static constexpr auto kMcpServerCommandKey = "mcpServerCommand";
 static constexpr auto kMcpAutoStartKey = "mcpAutoStart";
+static constexpr auto kLspMissingServerNotifiedKey = "lspMissingServerNotified";
 static constexpr auto kOpenFilesKey = "openFiles";
 static constexpr auto kActiveFileKey = "activeFile";
 static constexpr auto kEditorViewStatesKey = "editorViewStates";
@@ -156,6 +163,7 @@ constexpr int kCompletionRoleTextEdit = Qt::UserRole + 101;
 constexpr int kCompletionRoleAdditionalEdits = Qt::UserRole + 102;
 constexpr int kCompletionRoleInsertTextFormat = Qt::UserRole + 103;
 constexpr int kCompletionRoleLabel = Qt::UserRole + 104;
+constexpr int kCompletionRoleLspItem = Qt::UserRole + 105;
 
 constexpr int kOutlineRoleFilePath = Qt::UserRole + 200;
 constexpr int kOutlineRoleLine = Qt::UserRole + 201;
@@ -1776,6 +1784,73 @@ QVector<InstalledLibrarySnapshot> parseInstalledLibrariesFromJson(const QByteArr
   return out;
 }
 
+constexpr auto kRewrittoSectionStartMarker = "/* Rewritto section */";
+constexpr auto kRewrittoSectionEndMarker = "/* /Rewritto section */";
+
+QVector<InstalledLibrarySnapshot> detectSketchLibrariesFromHeaders(
+    const QVector<InstalledLibrarySnapshot>& installedLibraries,
+    const QSet<QString>& usedHeaders) {
+  QVector<InstalledLibrarySnapshot> out;
+  out.reserve(installedLibraries.size());
+  for (const InstalledLibrarySnapshot& library : installedLibraries) {
+    bool matches = false;
+    for (const QString& include : library.providesIncludes) {
+      if (usedHeaders.contains(include) ||
+          usedHeaders.contains(QFileInfo(include).fileName())) {
+        matches = true;
+        break;
+      }
+    }
+    if (!matches && !library.name.isEmpty()) {
+      for (const QString& header : usedHeaders) {
+        if (header.startsWith(library.name, Qt::CaseInsensitive)) {
+          matches = true;
+          break;
+        }
+      }
+    }
+    if (matches) {
+      out.push_back(library);
+    }
+  }
+  return out;
+}
+
+QString upsertRewrittoSectionText(QString sourceText,
+                                  const QString& sectionBlock) {
+  const QString block = sectionBlock.trimmed();
+  if (block.isEmpty()) {
+    return sourceText;
+  }
+
+  QString bom;
+  if (!sourceText.isEmpty() && sourceText.front() == QChar(0xFEFF)) {
+    bom = sourceText.left(1);
+    sourceText.remove(0, 1);
+  }
+
+  const QString startMarker = QString::fromLatin1(kRewrittoSectionStartMarker);
+  const QString endMarker = QString::fromLatin1(kRewrittoSectionEndMarker);
+  const int start = sourceText.indexOf(startMarker);
+  if (start >= 0) {
+    int end = sourceText.indexOf(endMarker, start + startMarker.size());
+    if (end >= 0) {
+      end += endMarker.size();
+      while (end < sourceText.size()) {
+        const QChar ch = sourceText.at(end);
+        if (ch != QLatin1Char('\n') && ch != QLatin1Char('\r')) {
+          break;
+        }
+        ++end;
+      }
+      sourceText.replace(start, end - start, block + QStringLiteral("\n\n"));
+      return bom + sourceText;
+    }
+  }
+
+  return bom + block + QStringLiteral("\n\n") + sourceText;
+}
+
 QVector<CoreToolDependency> parseCoreToolDependenciesFromInstalledJson(
     const QString& installedJsonPath,
     const QString& packager,
@@ -2290,48 +2365,254 @@ bool updateArduinoCliConfig(const QString& configPath,
 
 QString normalizeDiagnosticPath(QString filePath, int line, const QString& sketchFolder) {
   filePath = filePath.trimmed();
-  if (filePath.isEmpty() || line <= 0) {
+  if (filePath.isEmpty()) {
+    return filePath;
+  }
+
+  const QString normalizedSketchFolder = sketchFolder.trimmed().isEmpty()
+                                             ? QString{}
+                                             : QDir(sketchFolder).absolutePath();
+
+  if (line <= 0) {
     return filePath;
   }
 
   QFileInfo info(filePath);
-  if (info.isRelative() && !sketchFolder.trimmed().isEmpty()) {
-    filePath = QDir(sketchFolder).absoluteFilePath(filePath);
+  if (info.isRelative() && !normalizedSketchFolder.isEmpty()) {
+    filePath = QDir(normalizedSketchFolder).absoluteFilePath(filePath);
     info = QFileInfo(filePath);
   }
 
-  return info.absoluteFilePath();
+  const QString absolutePath = info.absoluteFilePath();
+  if (normalizedSketchFolder.isEmpty()) {
+    return absolutePath;
+  }
+
+  auto mapToSketchFile = [&normalizedSketchFolder](const QString& name) {
+    const QString trimmed = name.trimmed();
+    if (trimmed.isEmpty()) {
+      return QString{};
+    }
+    const QString candidate = QDir(normalizedSketchFolder).absoluteFilePath(trimmed);
+    if (!QFileInfo(candidate).isFile()) {
+      return QString{};
+    }
+    return QFileInfo(candidate).absoluteFilePath();
+  };
+
+  const QString fileName = QFileInfo(absolutePath).fileName();
+  QString mappedPath;
+
+  if (fileName.endsWith(QStringLiteral(".ino.cpp"), Qt::CaseInsensitive)) {
+    // Arduino build output may report diagnostics against generated *.ino.cpp;
+    // map back to the original sketch file for editor highlights.
+    mappedPath = mapToSketchFile(fileName.left(fileName.size() - 4));
+    if (mappedPath.isEmpty() &&
+        fileName.compare(QStringLiteral("sketch.ino.cpp"), Qt::CaseInsensitive) == 0) {
+      const QString primary = QFileInfo(normalizedSketchFolder).fileName() +
+                              QStringLiteral(".ino");
+      mappedPath = mapToSketchFile(primary);
+    }
+  }
+
+  if (mappedPath.isEmpty() && !QFileInfo(absolutePath).isFile()) {
+    mappedPath = mapToSketchFile(fileName);
+  }
+
+  if (mappedPath.isEmpty() && !QFileInfo(absolutePath).isFile()) {
+    const QDir sketchDir(normalizedSketchFolder);
+    const QStringList inos =
+        sketchDir.entryList(QStringList{QStringLiteral("*.ino"), QStringLiteral("*.pde")},
+                            QDir::Files, QDir::Name | QDir::IgnoreCase);
+    if (!inos.isEmpty()) {
+      const QString preferred =
+          QFileInfo(normalizedSketchFolder).fileName() + QStringLiteral(".ino");
+      if (inos.contains(preferred, Qt::CaseInsensitive)) {
+        mappedPath = QFileInfo(sketchDir.absoluteFilePath(preferred)).absoluteFilePath();
+      } else {
+        mappedPath = QFileInfo(sketchDir.absoluteFilePath(inos.first())).absoluteFilePath();
+      }
+    }
+  }
+
+  return mappedPath.isEmpty() ? absolutePath : mappedPath;
 }
 
 bool isIdentifierChar(QChar ch) {
   return ch.isLetterOrNumber() || ch == QLatin1Char('_');
 }
 
-QString identifierNearColumn(const QString& lineText, int column) {
-  if (lineText.isEmpty()) {
+int hoverIdentifierIndex(const QString& lineText, int character) {
+  if (lineText.isEmpty() || character < 0) {
+    return -1;
+  }
+
+  const int maxIndex = lineText.size() - 1;
+  int index = qMin(character, maxIndex);
+  if (index >= 0 && isIdentifierChar(lineText.at(index))) {
+    return index;
+  }
+
+  if (index > 0 && isIdentifierChar(lineText.at(index - 1))) {
+    return index - 1;
+  }
+
+  return -1;
+}
+
+QString completionPrefixAtCursor(QPlainTextEdit* plain,
+                                 int* outStartPos,
+                                 int* outEndPos) {
+  if (!plain || !plain->document()) {
     return {};
   }
 
-  int index = column > 0 ? column - 1 : 0;
-  index = qBound(0, index, lineText.size() - 1);
+  const QTextCursor cursor = plain->textCursor();
+  if (cursor.hasSelection()) {
+    return {};
+  }
 
+  const QTextBlock block = cursor.block();
+  if (!block.isValid()) {
+    return {};
+  }
+
+  const QString lineText = block.text();
+  int inBlock = cursor.position() - block.position();
+  inBlock = qBound(0, inBlock, lineText.size());
+
+  int start = inBlock;
+  while (start > 0 && isIdentifierChar(lineText.at(start - 1))) {
+    --start;
+  }
+
+  if (outStartPos) {
+    *outStartPos = block.position() + start;
+  }
+  if (outEndPos) {
+    *outEndPos = block.position() + inBlock;
+  }
+
+  if (start >= inBlock) {
+    return {};
+  }
+  return lineText.mid(start, inBlock - start);
+}
+
+const QStringList& arduinoInlineCompletionBaseWords() {
+  static const QStringList words = {
+      QStringLiteral("setup"),
+      QStringLiteral("loop"),
+      QStringLiteral("delay"),
+      QStringLiteral("delayMicroseconds"),
+      QStringLiteral("millis"),
+      QStringLiteral("micros"),
+      QStringLiteral("pinMode"),
+      QStringLiteral("digitalRead"),
+      QStringLiteral("digitalWrite"),
+      QStringLiteral("analogRead"),
+      QStringLiteral("analogWrite"),
+      QStringLiteral("analogReference"),
+      QStringLiteral("analogWriteResolution"),
+      QStringLiteral("analogReadResolution"),
+      QStringLiteral("tone"),
+      QStringLiteral("noTone"),
+      QStringLiteral("pulseIn"),
+      QStringLiteral("pulseInLong"),
+      QStringLiteral("shiftIn"),
+      QStringLiteral("shiftOut"),
+      QStringLiteral("attachInterrupt"),
+      QStringLiteral("detachInterrupt"),
+      QStringLiteral("interrupts"),
+      QStringLiteral("noInterrupts"),
+      QStringLiteral("map"),
+      QStringLiteral("constrain"),
+      QStringLiteral("min"),
+      QStringLiteral("max"),
+      QStringLiteral("abs"),
+      QStringLiteral("pow"),
+      QStringLiteral("sq"),
+      QStringLiteral("sqrt"),
+      QStringLiteral("sin"),
+      QStringLiteral("cos"),
+      QStringLiteral("tan"),
+      QStringLiteral("random"),
+      QStringLiteral("randomSeed"),
+      QStringLiteral("lowByte"),
+      QStringLiteral("highByte"),
+      QStringLiteral("bitRead"),
+      QStringLiteral("bitWrite"),
+      QStringLiteral("bitSet"),
+      QStringLiteral("bitClear"),
+      QStringLiteral("bit"),
+      QStringLiteral("Serial"),
+      QStringLiteral("Serial1"),
+      QStringLiteral("Serial2"),
+      QStringLiteral("Serial3"),
+      QStringLiteral("begin"),
+      QStringLiteral("print"),
+      QStringLiteral("println"),
+      QStringLiteral("printf"),
+      QStringLiteral("write"),
+      QStringLiteral("read"),
+      QStringLiteral("available"),
+      QStringLiteral("availableForWrite"),
+      QStringLiteral("peek"),
+      QStringLiteral("flush"),
+      QStringLiteral("setTimeout"),
+      QStringLiteral("find"),
+      QStringLiteral("findUntil"),
+      QStringLiteral("parseInt"),
+      QStringLiteral("parseFloat"),
+      QStringLiteral("readBytes"),
+      QStringLiteral("readBytesUntil"),
+      QStringLiteral("readString"),
+      QStringLiteral("readStringUntil"),
+      QStringLiteral("Stream"),
+      QStringLiteral("String"),
+      QStringLiteral("char"),
+      QStringLiteral("bool"),
+      QStringLiteral("byte"),
+      QStringLiteral("word"),
+      QStringLiteral("short"),
+      QStringLiteral("int"),
+      QStringLiteral("long"),
+      QStringLiteral("float"),
+      QStringLiteral("double"),
+      QStringLiteral("size_t"),
+      QStringLiteral("uint8_t"),
+      QStringLiteral("uint16_t"),
+      QStringLiteral("uint32_t"),
+      QStringLiteral("int8_t"),
+      QStringLiteral("int16_t"),
+      QStringLiteral("int32_t"),
+      QStringLiteral("HIGH"),
+      QStringLiteral("LOW"),
+      QStringLiteral("INPUT"),
+      QStringLiteral("OUTPUT"),
+      QStringLiteral("INPUT_PULLUP"),
+      QStringLiteral("true"),
+      QStringLiteral("false"),
+      QStringLiteral("if"),
+      QStringLiteral("else"),
+      QStringLiteral("for"),
+      QStringLiteral("while"),
+      QStringLiteral("switch"),
+      QStringLiteral("case"),
+      QStringLiteral("default"),
+      QStringLiteral("break"),
+      QStringLiteral("continue"),
+      QStringLiteral("return"),
+  };
+  return words;
+}
+
+QString identifierAtIndex(const QString& lineText, int index) {
+  if (lineText.isEmpty() || index < 0 || index >= lineText.size()) {
+    return {};
+  }
   if (!isIdentifierChar(lineText.at(index))) {
-    int nearest = -1;
-    int nearestDistance = std::numeric_limits<int>::max();
-    for (int i = 0; i < lineText.size(); ++i) {
-      if (!isIdentifierChar(lineText.at(i))) {
-        continue;
-      }
-      const int distance = std::abs(i - index);
-      if (distance < nearestDistance) {
-        nearestDistance = distance;
-        nearest = i;
-      }
-    }
-    if (nearest < 0) {
-      return {};
-    }
-    index = nearest;
+    return {};
   }
 
   int start = index;
@@ -2370,6 +2651,36 @@ QString identifierNearColumn(const QString& lineText, int column) {
     return {};
   }
   return token;
+}
+
+QString identifierNearColumn(const QString& lineText, int column) {
+  if (lineText.isEmpty()) {
+    return {};
+  }
+
+  int index = column > 0 ? column - 1 : 0;
+  index = qBound(0, index, lineText.size() - 1);
+
+  if (!isIdentifierChar(lineText.at(index))) {
+    int nearest = -1;
+    int nearestDistance = std::numeric_limits<int>::max();
+    for (int i = 0; i < lineText.size(); ++i) {
+      if (!isIdentifierChar(lineText.at(i))) {
+        continue;
+      }
+      const int distance = std::abs(i - index);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = i;
+      }
+    }
+    if (nearest < 0) {
+      return {};
+    }
+    index = nearest;
+  }
+
+  return identifierAtIndex(lineText, index);
 }
 
 int declarationInsertPosition(QTextDocument* doc) {
@@ -2553,6 +2864,302 @@ QString hoverContentsToText(const QJsonValue& contentsValue) {
   return {};
 }
 
+bool parseLspLocationObject(const QJsonObject& obj,
+                            QString* outPath,
+                            int* outLine,
+                            int* outColumn) {
+  if (!outPath || !outLine || !outColumn) {
+    return false;
+  }
+
+  QString uri = obj.value(QStringLiteral("uri")).toString().trimmed();
+  if (uri.isEmpty()) {
+    uri = obj.value(QStringLiteral("targetUri")).toString().trimmed();
+  }
+  QJsonObject range = obj.value(QStringLiteral("range")).toObject();
+  if (range.isEmpty()) {
+    range = obj.value(QStringLiteral("targetSelectionRange")).toObject();
+  }
+  if (range.isEmpty()) {
+    range = obj.value(QStringLiteral("targetRange")).toObject();
+  }
+  const QJsonObject start = range.value(QStringLiteral("start")).toObject();
+  const QString path = pathFromUriOrPath(uri);
+  if (path.isEmpty() || start.isEmpty()) {
+    return false;
+  }
+
+  *outPath = path;
+  *outLine = start.value(QStringLiteral("line")).toInt() + 1;
+  *outColumn = start.value(QStringLiteral("character")).toInt() + 1;
+  return true;
+}
+
+bool parseFirstLspLocation(const QJsonValue& result,
+                           QString* outPath,
+                           int* outLine,
+                           int* outColumn) {
+  if (!outPath || !outLine || !outColumn) {
+    return false;
+  }
+
+  if (result.isObject()) {
+    return parseLspLocationObject(result.toObject(), outPath, outLine, outColumn);
+  }
+
+  if (result.isArray()) {
+    const QJsonArray arr = result.toArray();
+    for (const QJsonValue& value : arr) {
+      if (!value.isObject()) {
+        continue;
+      }
+      if (parseLspLocationObject(value.toObject(), outPath, outLine, outColumn)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+QString originSummaryForPath(const QString& filePath,
+                             const QString& sketchFolder) {
+  const QString normalized = QDir::fromNativeSeparators(
+      QFileInfo(filePath).absoluteFilePath());
+  if (normalized.isEmpty()) {
+    return {};
+  }
+
+  const QString normalizedSketch = QDir::fromNativeSeparators(
+      QDir(sketchFolder).absolutePath());
+  if (!normalizedSketch.isEmpty()) {
+    const QString sketchPrefix = normalizedSketch + QLatin1Char('/');
+    if (normalized == normalizedSketch || normalized.startsWith(sketchPrefix)) {
+      return QObject::tr("Origin: current sketch");
+    }
+  }
+
+  const QRegularExpression libRe(QStringLiteral(R"(/libraries/([^/]+)/)"));
+  const QRegularExpressionMatch libMatch = libRe.match(normalized);
+  if (libMatch.hasMatch()) {
+    const QString libName = libMatch.captured(1).trimmed();
+    if (!libName.isEmpty()) {
+      if (normalized.contains(QStringLiteral("/.arduino15/packages/"))) {
+        return QObject::tr("Origin: library %1 (board platform)")
+            .arg(libName);
+      }
+      return QObject::tr("Origin: library %1").arg(libName);
+    }
+  }
+
+  if (normalized.contains(QStringLiteral("/.arduino15/packages/")) &&
+      normalized.contains(QStringLiteral("/cores/"))) {
+    return QObject::tr("Origin: Arduino core");
+  }
+
+  return QObject::tr("Origin file: %1").arg(QFileInfo(normalized).fileName());
+}
+
+QString symbolAtDocumentPosition(QTextDocument* doc, int line, int character) {
+  if (!doc) {
+    return {};
+  }
+  const QTextBlock block = doc->findBlockByNumber(qMax(0, line));
+  if (!block.isValid()) {
+    return {};
+  }
+  return identifierAtIndex(block.text(), qMax(0, character)).trimmed();
+}
+
+struct SymbolSearchMatch final {
+  QString filePath;
+  int line = 0;
+  int column = 0;
+  int score = 0;
+  QString snippet;
+  QString origin;
+};
+
+QVector<SymbolSearchMatch> findSymbolMatchesInRoots(
+    const QString& symbol,
+    const QStringList& roots,
+    const QString& sketchFolder,
+    const QString& currentFilePath,
+    int currentLine,
+    int maxMatches = 8) {
+  QVector<SymbolSearchMatch> matches;
+  if (symbol.trimmed().isEmpty() || maxMatches <= 0) {
+    return matches;
+  }
+
+  const QString escapedSymbol = QRegularExpression::escape(symbol);
+  const QRegularExpression callRe(
+      QStringLiteral(R"(\b%1\s*\()")
+          .arg(escapedSymbol));
+  const QRegularExpression wordRe(
+      QStringLiteral(R"(\b%1\b)")
+          .arg(escapedSymbol));
+  const QRegularExpression memberCallRe(
+      QStringLiteral(R"((?:\.|->)\s*%1\s*\()").arg(escapedSymbol));
+  const QRegularExpression scopedCallRe(
+      QStringLiteral(R"((?:^|[^A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*::)+\s*%1\s*\()")
+          .arg(escapedSymbol));
+  const QRegularExpression definitionLikeRe(
+      QStringLiteral(
+          R"((?:^|[^A-Za-z0-9_])%1\s*\([^)]*\)\s*(?:const\s*)?(?:\{|;))")
+          .arg(escapedSymbol));
+  const QStringList filters = {QStringLiteral("*.h"),   QStringLiteral("*.hpp"),
+                               QStringLiteral("*.hh"),  QStringLiteral("*.hxx"),
+                               QStringLiteral("*.c"),   QStringLiteral("*.cc"),
+                               QStringLiteral("*.cpp"), QStringLiteral("*.cxx"),
+                               QStringLiteral("*.ino"), QStringLiteral("*.pde")};
+
+  const QString normalizedSketch = QDir::fromNativeSeparators(
+      QDir(sketchFolder).absolutePath());
+  const QString sketchPrefix = normalizedSketch + QLatin1Char('/');
+  const QString normalizedCurrentPath = QDir::fromNativeSeparators(
+      QFileInfo(currentFilePath).absoluteFilePath());
+  const int maxCollect = qMax(maxMatches * 12, maxMatches + 24);
+
+  auto scorePath = [&normalizedSketch, &sketchPrefix](const QString& path) {
+    int score = 0;
+    const QString normalizedPath = QDir::fromNativeSeparators(
+        QFileInfo(path).absoluteFilePath());
+    const bool isSketchFile =
+        !normalizedSketch.isEmpty() &&
+        (normalizedPath == normalizedSketch ||
+         normalizedPath.startsWith(sketchPrefix));
+    score += isSketchFile ? 22 : 18;
+    if (normalizedPath.contains(QStringLiteral("/libraries/"))) {
+      score += 24;
+    }
+    if (normalizedPath.contains(QStringLiteral("/core/")) ||
+        normalizedPath.contains(QStringLiteral("/cores/"))) {
+      score += 18;
+    }
+    if (normalizedPath.contains(QStringLiteral("/.arduino15/packages/"))) {
+      score += 8;
+    }
+    const QString suffix = QFileInfo(normalizedPath).suffix().toLower();
+    if (suffix == QStringLiteral("h") || suffix == QStringLiteral("hpp") ||
+        suffix == QStringLiteral("hh") || suffix == QStringLiteral("hxx")) {
+      score += 10;
+    }
+    return score;
+  };
+
+  QSet<QString> seenLocations;
+  for (const QString& root : roots) {
+    if (matches.size() >= maxCollect) {
+      break;
+    }
+    const QString trimmedRoot = root.trimmed();
+    if (trimmedRoot.isEmpty() || !QFileInfo(trimmedRoot).isDir()) {
+      continue;
+    }
+
+    QDirIterator it(trimmedRoot, filters, QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext() && matches.size() < maxCollect) {
+      const QString path = it.next();
+      const QFileInfo info(path);
+      if (!info.exists() || !info.isFile() || info.size() > 2 * 1024 * 1024) {
+        continue;
+      }
+
+      QFile file(path);
+      if (!file.open(QIODevice::ReadOnly)) {
+        continue;
+      }
+      const QString text = QString::fromUtf8(file.readAll());
+      file.close();
+
+      const QStringList lines = text.split(QLatin1Char('\n'));
+      for (int i = 0; i < lines.size() && matches.size() < maxCollect; ++i) {
+        const QString lineText = lines.at(i);
+        const QString trimmedLine = lineText.trimmed();
+        if (trimmedLine.isEmpty() || trimmedLine.startsWith(QStringLiteral("//")) ||
+            trimmedLine.startsWith(QStringLiteral("/*")) ||
+            trimmedLine.startsWith(QStringLiteral("*")) ||
+            trimmedLine.startsWith(QStringLiteral("#"))) {
+          continue;
+        }
+
+        QRegularExpressionMatch match = callRe.match(lineText);
+        const bool hasCall = match.hasMatch();
+        if (!match.hasMatch()) {
+          match = wordRe.match(lineText);
+        }
+        if (!match.hasMatch()) {
+          continue;
+        }
+
+        if (!normalizedCurrentPath.isEmpty() &&
+            QDir::fromNativeSeparators(QFileInfo(path).absoluteFilePath()) ==
+                normalizedCurrentPath &&
+            (i + 1) == qMax(1, currentLine)) {
+          continue;
+        }
+
+        const bool memberUsage = memberCallRe.match(lineText).hasMatch();
+        const bool scopedCall = scopedCallRe.match(lineText).hasMatch();
+        if (memberUsage && !scopedCall) {
+          // Skip call sites such as `obj.symbol()`; they are not origins.
+          continue;
+        }
+
+        const QString key = QStringLiteral("%1:%2").arg(path).arg(i + 1);
+        if (seenLocations.contains(key)) {
+          continue;
+        }
+        seenLocations.insert(key);
+
+        int score = scorePath(path);
+        score += hasCall ? 26 : 8;
+        if (scopedCall) {
+          score += 42;
+        }
+        if (definitionLikeRe.match(lineText).hasMatch()) {
+          score += 44;
+        }
+        if (trimmedLine.contains(QLatin1Char('{'))) {
+          score += 8;
+        }
+        if (trimmedLine.endsWith(QLatin1Char(';'))) {
+          score += 6;
+        }
+        SymbolSearchMatch item;
+        item.filePath = path;
+        item.line = i + 1;
+        item.column = match.capturedStart() + 1;
+        item.score = score;
+        item.snippet = lineText.trimmed();
+        item.origin = originSummaryForPath(path, sketchFolder);
+        matches.push_back(item);
+      }
+    }
+  }
+
+  std::stable_sort(matches.begin(), matches.end(),
+                   [](const SymbolSearchMatch& left,
+                      const SymbolSearchMatch& right) {
+                     if (left.score != right.score) {
+                       return left.score > right.score;
+                     }
+                     if (left.filePath != right.filePath) {
+                       return left.filePath < right.filePath;
+                     }
+                     if (left.line != right.line) {
+                       return left.line < right.line;
+                     }
+                     return left.column < right.column;
+                   });
+  if (matches.size() > maxMatches) {
+    matches.resize(maxMatches);
+  }
+
+  return matches;
+}
+
 bool lspRangeToDocumentOffsets(QTextDocument* doc,
                                const QJsonObject& rangeObj,
                                int* outStart,
@@ -2604,6 +3211,22 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   lspRestartTimer_->setInterval(600);
   connect(lspRestartTimer_, &QTimer::timeout, this,
           [this] { restartLanguageServer(); });
+
+  inlineCompletionTimer_ = new QTimer(this);
+  inlineCompletionTimer_->setSingleShot(true);
+  inlineCompletionTimer_->setInterval(130);
+  connect(inlineCompletionTimer_, &QTimer::timeout, this,
+          [this] { triggerInlineCompletion(false); });
+
+  hoverBusyIndicatorTimer_ = new QTimer(this);
+  hoverBusyIndicatorTimer_->setSingleShot(true);
+  hoverBusyIndicatorTimer_->setInterval(150);
+  connect(hoverBusyIndicatorTimer_, &QTimer::timeout, this, [this] {
+    if (hoverBusyPendingToken_ != hoverBusyToken_) {
+      return;
+    }
+    showHoverBusyIndicator(hoverBusyIndicatorPos_);
+  });
 
   boardOptionsRefreshTimer_ = new QTimer(this);
   boardOptionsRefreshTimer_->setSingleShot(true);
@@ -2755,6 +3378,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   QTimer::singleShot(500, this, [this] {
     refreshInstalledBoards();
     refreshConnectedPorts();
+  });
+
+  // Warm library metadata once so hover/completion fallback can resolve
+  // external library symbols without waiting for the first menu open.
+  QTimer::singleShot(1800, this, [this] {
+    if (includeLibraryCacheDirty_) {
+      rebuildIncludeLibraryMenu();
+    }
   });
 
   bool checkIndexesOnStartup = false;
@@ -3093,6 +3724,33 @@ void MainWindow::createActions() {
   actionUploadSSL_ = new QAction(tr("Upload SSL Root Certificates"), this);
   actionUploadSSL_->setStatusTip(tr("Upload SSL Root Certificates to the board"));
 
+  actionUpdateRewrittoSection_ =
+      new QAction(tr("Update Rewritto Section"), this);
+  actionUpdateRewrittoSection_->setStatusTip(
+      tr("Insert or refresh the Rewritto metadata section in the main sketch"));
+  {
+    QIcon icon = QIcon::fromTheme(QStringLiteral("document-properties"));
+    if (icon.isNull()) {
+      icon = style()->standardIcon(QStyle::SP_FileDialogInfoView);
+    }
+    actionUpdateRewrittoSection_->setIcon(icon);
+    actionUpdateRewrittoSection_->setIconVisibleInMenu(false);
+  }
+
+  actionAutoUpdateRewrittoSection_ =
+      new QAction(tr("Auto-update Rewritto Section on Verify/Upload"), this);
+  actionAutoUpdateRewrittoSection_->setCheckable(true);
+  actionAutoUpdateRewrittoSection_->setStatusTip(
+      tr("Keep the Rewritto metadata section in sync before build/upload"));
+  {
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+    const bool autoUpdate =
+        settings.value(kRewrittoSectionAutoUpdateKey, false).toBool();
+    settings.endGroup();
+    actionAutoUpdateRewrittoSection_->setChecked(autoUpdate);
+  }
+
   actionExportSetupProfile_ = new QAction(tr("Export Setup Profile…"), this);
   actionImportSetupProfile_ = new QAction(tr("Import Setup Profile…"), this);
   actionGenerateProjectLockfile_ = new QAction(tr("Generate Project Lockfile"), this);
@@ -3217,6 +3875,10 @@ void MainWindow::createMenus() {
   sketchMenu->addAction(actionExportCompiledBinary_);
   sketchMenu->addAction(actionOptimizeForDebug_);
   sketchMenu->addSeparator();
+  sketchMenu->addAction(actionRenameSketch_);
+  sketchMenu->addAction(actionAddFileToSketch_);
+  sketchMenu->addAction(actionAddZipLibrary_);
+  sketchMenu->addSeparator();
   sketchMenu->addAction(actionShowSketchFolder_);
   sketchMenu->addSeparator();
   includeLibraryMenu_ = sketchMenu->addMenu(tr("Include Library"));
@@ -3225,6 +3887,9 @@ void MainWindow::createMenus() {
 
   toolsMenu_ = menuBar()->addMenu(tr("&Tools"));
   // Group 0: Main
+  toolsMenu_->addAction(actionUpdateRewrittoSection_);
+  toolsMenu_->addAction(actionAutoUpdateRewrittoSection_);
+  toolsMenu_->addSeparator();
   toolsMenu_->addAction(actionAutoFormat_);
   toolsMenu_->addAction(actionArchiveSketch_);
   toolsMenu_->addAction(actionManageLibraries_);
@@ -3894,6 +4559,21 @@ void MainWindow::createMenus() {
     uploadSslRootCertificates();
   });
 
+  connect(actionUpdateRewrittoSection_, &QAction::triggered, this, [this] {
+    updateRewrittoSection();
+  });
+
+  connect(actionAutoUpdateRewrittoSection_, &QAction::toggled, this,
+          [this](bool enabled) {
+            QSettings settings;
+            settings.beginGroup(kSettingsGroup);
+            settings.setValue(kRewrittoSectionAutoUpdateKey, enabled);
+            settings.endGroup();
+            showToast(enabled
+                          ? tr("Rewritto section auto-update enabled")
+                          : tr("Rewritto section auto-update disabled"));
+          });
+
   connect(actionExportSetupProfile_, &QAction::triggered, this, [this] {
     exportSetupProfile();
   });
@@ -3984,6 +4664,12 @@ void MainWindow::createLayout() {
   completer_->setCompletionMode(QCompleter::PopupCompletion);
   completer_->setCaseSensitivity(Qt::CaseInsensitive);
   completer_->setCompletionRole(kCompletionRoleLabel);
+  connect(completer_,
+          QOverload<const QModelIndex&>::of(&QCompleter::activated),
+          this,
+          [this](const QModelIndex& index) {
+            applyInlineCompletionFromIndex(index);
+          });
 
   // Remove default margins and spacing for a more compact, modern look
   setContentsMargins(0, 0, 0, 0);
@@ -4001,6 +4687,7 @@ void MainWindow::createLayout() {
   buildToolBar_->addAction(actionUpload_);
   buildToolBar_->addAction(actionJustUpload_);
   buildToolBar_->addAction(actionStop_);
+  buildToolBar_->addAction(actionUpdateRewrittoSection_);
   buildToolBar_->addSeparator();
 
   // Custom Board/Port selector styling - more compact
@@ -4459,12 +5146,65 @@ void MainWindow::createLayout() {
   syncActivityCheck(searchDock_, searchToggle);
 
   // --- Bottom Area ---
+  serialMonitor_ = new SerialMonitorWidget(this);
+  serialPlotter_ = new SerialPlotterWidget(this);
+
   outputDock_ = new QDockWidget(tr("Output"), this);
   outputDock_->setObjectName("OutputDock");
   outputDock_->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
-  outputDock_->setWidget(output_);
+  bottomPanelContainer_ = new QWidget(outputDock_);
+  bottomPanelContainer_->setObjectName("BottomPanelContainer");
+  auto* bottomPanelLayout = new QVBoxLayout(bottomPanelContainer_);
+  bottomPanelLayout->setContentsMargins(0, 0, 0, 0);
+  bottomPanelLayout->setSpacing(0);
+
+  bottomPanelSelectorBar_ = new QToolBar(bottomPanelContainer_);
+  bottomPanelSelectorBar_->setObjectName("BottomPanelSelector");
+  bottomPanelSelectorBar_->setMovable(false);
+  bottomPanelSelectorBar_->setFloatable(false);
+  bottomPanelSelectorBar_->setIconSize(QSize(14, 14));
+  bottomPanelSelectorBar_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+
+  actionBottomPanelOutput_ = new QAction(tr("Output"), bottomPanelSelectorBar_);
+  actionBottomPanelOutput_->setCheckable(true);
+  actionBottomPanelSerialMonitor_ =
+      new QAction(tr("Serial Monitor"), bottomPanelSelectorBar_);
+  actionBottomPanelSerialMonitor_->setCheckable(true);
+  actionBottomPanelSerialPlotter_ =
+      new QAction(tr("Serial Plotter"), bottomPanelSelectorBar_);
+  actionBottomPanelSerialPlotter_->setCheckable(true);
+
+  bottomPanelSelectorGroup_ = new QActionGroup(bottomPanelSelectorBar_);
+  bottomPanelSelectorGroup_->setExclusive(true);
+  bottomPanelSelectorGroup_->addAction(actionBottomPanelOutput_);
+  bottomPanelSelectorGroup_->addAction(actionBottomPanelSerialMonitor_);
+  bottomPanelSelectorGroup_->addAction(actionBottomPanelSerialPlotter_);
+
+  bottomPanelSelectorBar_->addAction(actionBottomPanelOutput_);
+  bottomPanelSelectorBar_->addAction(actionBottomPanelSerialMonitor_);
+  bottomPanelSelectorBar_->addAction(actionBottomPanelSerialPlotter_);
+
+  bottomPanelStack_ = new QStackedWidget(bottomPanelContainer_);
+  bottomPanelStack_->setObjectName("BottomPanelStack");
+  bottomPanelStack_->addWidget(output_);
+  bottomPanelStack_->addWidget(serialMonitor_);
+  bottomPanelStack_->addWidget(serialPlotter_);
+
+  bottomPanelLayout->addWidget(bottomPanelSelectorBar_);
+  bottomPanelLayout->addWidget(bottomPanelStack_, 1);
+  outputDock_->setWidget(bottomPanelContainer_);
   addDockWidget(Qt::BottomDockWidgetArea, outputDock_);
   resizeDocks({outputDock_}, {180}, Qt::Vertical);
+  connect(actionBottomPanelOutput_, &QAction::triggered, this, [this] {
+    setBottomPanelView(BottomPanelView::Output);
+  });
+  connect(actionBottomPanelSerialMonitor_, &QAction::triggered, this, [this] {
+    setBottomPanelView(BottomPanelView::SerialMonitor);
+  });
+  connect(actionBottomPanelSerialPlotter_, &QAction::triggered, this, [this] {
+    setBottomPanelView(BottomPanelView::SerialPlotter);
+  });
+  setBottomPanelView(BottomPanelView::Output, false);
 
   outlineRefreshTimer_ = new QTimer(this);
   outlineRefreshTimer_->setSingleShot(true);
@@ -4483,26 +5223,37 @@ void MainWindow::createLayout() {
   cliBusyLabel_ = new QLabel(this);
   cliBusyLabel_->setObjectName("CliBusyLabel");
   cliBusyLabel_->setStyleSheet(
-      "QLabel#CliBusyLabel { font-weight: 600; letter-spacing: 0.2px; }");
+      "QLabel#CliBusyLabel {"
+      "  font-weight: 700;"
+      "  font-size: 12px;"
+      "  letter-spacing: 0.3px;"
+      "  color: palette(highlight);"
+      "  padding-right: 6px;"
+      "}");
   cliBusyLabel_->hide();
   statusBar()->addPermanentWidget(cliBusyLabel_);
 
   cliBusy_ = new QProgressBar(this);
   cliBusy_->setRange(0, 100);
   cliBusy_->setValue(0);
-  cliBusy_->setTextVisible(false);
-  cliBusy_->setFixedSize(180, 12);
+  cliBusy_->setTextVisible(true);
+  cliBusy_->setAlignment(Qt::AlignCenter);
+  cliBusy_->setFormat(QStringLiteral("%p%"));
+  cliBusy_->setFixedSize(320, 18);
   cliBusy_->setStyleSheet(
       "QProgressBar {"
-      "  border: 1px solid rgba(127, 127, 127, 0.35);"
-      "  border-radius: 6px;"
-      "  background: rgba(127, 127, 127, 0.12);"
-      "  padding: 1px;"
+      "  border: 1px solid rgba(45, 212, 191, 0.7);"
+      "  border-radius: 9px;"
+      "  background: rgba(20, 26, 38, 0.45);"
+      "  color: #f8fafc;"
+      "  font-weight: 700;"
+      "  padding: 2px;"
       "}"
       "QProgressBar::chunk {"
-      "  border-radius: 5px;"
+      "  border-radius: 7px;"
+      "  margin: 0.5px;"
       "  background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-      "    stop:0 #00a7b5, stop:1 #2dd4bf);"
+      "    stop:0 #00a7b5, stop:1 #22d3ee);"
       "}");
   cliBusy_->hide();
   statusBar()->addPermanentWidget(cliBusy_);
@@ -4524,7 +5275,7 @@ void MainWindow::wireSignals() {
   }
   if (libraryManager_) {
     connect(libraryManager_, &LibraryManagerDialog::librariesChanged, this,
-            [this] { clearIncludeLibraryMenuActions(); });
+            [this] { invalidateIncludeLibraryCache(); });
     connect(libraryManager_, &LibraryManagerDialog::includeLibraryRequested, this,
             &MainWindow::insertLibraryIncludes);
     connect(libraryManager_, &LibraryManagerDialog::openLibraryExamplesRequested, this,
@@ -4786,23 +5537,6 @@ void MainWindow::wireSignals() {
   debugDock_->hide();
 
   serialPort_ = new SerialPort(this);
-  serialMonitor_ = new SerialMonitorWidget(this);
-  serialDock_ = new QDockWidget(tr("Serial Monitor"), this);
-  serialDock_->setObjectName("SerialMonitorDock");
-  serialDock_->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
-  serialDock_->setWidget(serialMonitor_);
-  addDockWidget(Qt::BottomDockWidgetArea, serialDock_);
-  tabifyDockWidget(outputDock_, serialDock_);
-  serialDock_->hide();
-
-  serialPlotter_ = new SerialPlotterWidget(this);
-  serialPlotterDock_ = new QDockWidget(tr("Serial Plotter"), this);
-  serialPlotterDock_->setObjectName("SerialPlotterDock");
-  serialPlotterDock_->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
-  serialPlotterDock_->setWidget(serialPlotter_);
-  addDockWidget(Qt::BottomDockWidgetArea, serialPlotterDock_);
-  tabifyDockWidget(outputDock_, serialPlotterDock_);
-  serialPlotterDock_->hide();
 
   connect(arduinoCli_, &ArduinoCli::outputReceived, this,
           [this](const QString& text) {
@@ -4904,6 +5638,37 @@ void MainWindow::wireSignals() {
               portsRefreshQueued_ = false;
               refreshConnectedPorts();
             };
+            const bool autoUpdateRewrittoSection =
+                actionAutoUpdateRewrittoSection_ &&
+                actionAutoUpdateRewrittoSection_->isChecked();
+            auto syncRewrittoSectionAfterSuccess = [this](const QString& sketchFolder) {
+              const QString normalizedSketch = normalizeSketchFolderPath(sketchFolder);
+              if (normalizedSketch.isEmpty()) {
+                return;
+              }
+              QString sectionError;
+              QStringList warnings;
+              if (!upsertRewrittoSectionInSketch(normalizedSketch, true, &sectionError,
+                                                 &warnings)) {
+                if (output_) {
+                  output_->appendLine(
+                      tr("[Rewritto section] %1")
+                          .arg(sectionError.trimmed().isEmpty()
+                                   ? tr("Could not refresh sketch metadata.")
+                                   : sectionError));
+                }
+                return;
+              }
+              if (output_) {
+                for (const QString& warning : warnings) {
+                  const QString trimmed = warning.trimmed();
+                  if (!trimmed.isEmpty()) {
+                    output_->appendLine(tr("[Rewritto section] %1").arg(trimmed));
+                  }
+                }
+              }
+            };
+            QString rewrittoSyncSketchFolder;
 
 	            if (job == CliJobKind::UploadCompile) {
 	              if (cancelled || uploadCancelled) {
@@ -4920,6 +5685,7 @@ void MainWindow::wireSignals() {
                   rememberSuccessfulCompileArtifact(
                       pendingUploadFlow_.sketchFolder, pendingUploadFlow_.fqbn,
                       pendingUploadFlow_.buildPath);
+                  recordCompileTimestampForSketch(pendingUploadFlow_.sketchFolder);
                   finishCliProgress(true, false);
 	                output_->appendHtml(QString("<span style=\"color:#388e3c;\"><b>%1</b></span>")
 	                                        .arg(tr("Compile finished. Uploading\u2026")));
@@ -4979,6 +5745,16 @@ void MainWindow::wireSignals() {
                           "/rewritto/build";
                       rememberSuccessfulCompileArtifact(
                           currentSketchFolderPath(), currentFqbn(), buildPath);
+                      recordCompileTimestampForSketch(currentSketchFolderPath());
+                      rewrittoSyncSketchFolder = currentSketchFolderPath();
+			                } else if (job == CliJobKind::Upload ||
+                               job == CliJobKind::UploadUsingProgrammer) {
+                      rewrittoSyncSketchFolder = pendingUploadFlow_.sketchFolder;
+			                } else if (job == CliJobKind::LibraryInstall) {
+                      invalidateIncludeLibraryCache();
+                      if (libraryManager_) {
+                        libraryManager_->refresh();
+                      }
 			                }
                     finishCliProgress(true, false);
 			                output_->appendHtml(QString("<span style=\"color:#388e3c;\"><b>%1</b></span>")
@@ -5034,6 +5810,10 @@ void MainWindow::wireSignals() {
 			                                        .arg(QString("arduino-cli finished with exit code %1.").arg(exitCode)));
 			              }
 		            }
+                if (!rewrittoSyncSketchFolder.isEmpty() &&
+                    autoUpdateRewrittoSection) {
+                  syncRewrittoSectionAfterSuccess(rewrittoSyncSketchFolder);
+                }
 		            if (job == CliJobKind::Upload ||
 		                job == CliJobKind::UploadUsingProgrammer) {
 		              clearPendingUploadFlow();
@@ -5088,6 +5868,16 @@ void MainWindow::wireSignals() {
     updateBoardPortIndicator();
     updateUploadActionStates();
     scheduleOutlineRefresh();
+    if (editor_) {
+      if (auto* current = editor_->currentEditorWidget()) {
+        current->setMouseTracking(true);
+        current->installEventFilter(this);
+        if (auto* viewport = current->viewport()) {
+          viewport->setMouseTracking(true);
+          viewport->installEventFilter(this);
+        }
+      }
+    }
   });
 
   connect(editor_, &EditorWidget::documentOpened, this,
@@ -5110,6 +5900,16 @@ void MainWindow::wireSignals() {
             updateUploadActionStates();
             scheduleOutlineRefresh();
             scheduleRestartLanguageServer();
+            if (editor_) {
+              if (auto* opened = editor_->editorWidgetForFile(path)) {
+                opened->setMouseTracking(true);
+                opened->installEventFilter(this);
+                if (auto* viewport = opened->viewport()) {
+                  viewport->setMouseTracking(true);
+                  viewport->installEventFilter(this);
+                }
+              }
+            }
             if (lsp_ && lsp_->isReady()) {
               lsp_->didOpen(toFileUri(path), languageIdForFilePath(path), text);
             }
@@ -5152,6 +5952,16 @@ void MainWindow::wireSignals() {
 
   scheduleRestartLanguageServer();
   scheduleOutlineRefresh();
+  if (editor_) {
+    if (auto* current = editor_->currentEditorWidget()) {
+      current->setMouseTracking(true);
+      current->installEventFilter(this);
+      if (auto* viewport = current->viewport()) {
+        viewport->setMouseTracking(true);
+        viewport->installEventFilter(this);
+      }
+    }
+  }
 }
 
 void MainWindow::processOutputChunk(const QString& chunk) {
@@ -5295,6 +6105,140 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
          event->type() == QEvent::PaletteChange ||
          event->type() == QEvent::StyleChange)) {
         rebuildContextToolbar();
+    }
+
+    auto resolveEditorFromWatched = [](QObject* obj) -> QPlainTextEdit* {
+        QPlainTextEdit* plain = qobject_cast<QPlainTextEdit*>(obj);
+        QWidget* widget = qobject_cast<QWidget*>(obj);
+        if (!plain && widget) {
+            QObject* parent = widget->parent();
+            while (parent && !plain) {
+                plain = qobject_cast<QPlainTextEdit*>(parent);
+                parent = parent->parent();
+            }
+        }
+        return plain;
+    };
+
+    if (editor_ && event && event->type() == QEvent::ToolTip) {
+        QPlainTextEdit* plain = resolveEditorFromWatched(watched);
+        QWidget* watchedWidget = qobject_cast<QWidget*>(watched);
+        auto* helpEvent = static_cast<QHelpEvent*>(event);
+        auto* currentEditor = editor_->currentEditorWidget();
+        const QString filePath = editor_->currentFilePath().trimmed();
+        if (plain && helpEvent && currentEditor && plain == currentEditor &&
+            !filePath.isEmpty()) {
+            QPoint pos = helpEvent->pos();
+            QWidget* viewport = plain->viewport();
+            if (viewport && watchedWidget && watchedWidget != viewport) {
+                pos = viewport->mapFrom(watchedWidget, pos);
+            }
+            const QTextCursor cursor = plain->cursorForPosition(pos);
+            const QTextBlock block = cursor.block();
+            const int line = qMax(0, block.blockNumber());
+            const int character =
+                qMax(0, cursor.position() - block.position());
+            const int hoverIndex = hoverIdentifierIndex(block.text(), character);
+            if (hoverIndex < 0) {
+                QToolTip::hideText();
+                return QMainWindow::eventFilter(watched, event);
+            }
+            showHoverAtPosition(plain, filePath, line, hoverIndex,
+                                helpEvent->globalPos(), true);
+            event->accept();
+            return true;
+        }
+    }
+
+    if (editor_ && event &&
+        (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease)) {
+        QPlainTextEdit* plain = resolveEditorFromWatched(watched);
+        auto* currentEditor = editor_->currentEditorWidget();
+        if (plain && currentEditor && plain == currentEditor && completer_) {
+            if (event->type() == QEvent::KeyPress &&
+                completer_->popup() && completer_->popup()->isVisible()) {
+                auto* keyEvent = static_cast<QKeyEvent*>(event);
+                const int key = keyEvent->key();
+                if (key == Qt::Key_Up || key == Qt::Key_Down ||
+                    key == Qt::Key_PageUp || key == Qt::Key_PageDown ||
+                    key == Qt::Key_Home || key == Qt::Key_End) {
+                    auto* popup = completer_->popup();
+                    auto* model = popup ? popup->model() : nullptr;
+                    const int count = model ? model->rowCount() : 0;
+                    if (count > 0 && popup) {
+                        QModelIndex current = popup->currentIndex();
+                        int row = current.isValid() ? current.row() : 0;
+                        constexpr int kPageStep = 8;
+                        if (key == Qt::Key_Up) {
+                            row = qMax(0, row - 1);
+                        } else if (key == Qt::Key_Down) {
+                            row = qMin(count - 1, row + 1);
+                        } else if (key == Qt::Key_PageUp) {
+                            row = qMax(0, row - kPageStep);
+                        } else if (key == Qt::Key_PageDown) {
+                            row = qMin(count - 1, row + kPageStep);
+                        } else if (key == Qt::Key_Home) {
+                            row = 0;
+                        } else if (key == Qt::Key_End) {
+                            row = count - 1;
+                        }
+                        popup->setCurrentIndex(model->index(row, 0));
+                    }
+                    event->accept();
+                    return true;
+                }
+                if (key == Qt::Key_Return || key == Qt::Key_Enter ||
+                    key == Qt::Key_Tab) {
+                    auto* popup = completer_->popup();
+                    auto* model = popup ? popup->model() : nullptr;
+                    QModelIndex idx = popup ? popup->currentIndex() : QModelIndex{};
+                    if (!idx.isValid() && model && model->rowCount() > 0) {
+                        idx = model->index(0, 0);
+                    }
+                    if (idx.isValid()) {
+                        applyInlineCompletionFromIndex(idx);
+                    } else {
+                        if (popup) {
+                            popup->hide();
+                        }
+                    }
+                    event->accept();
+                    return true;
+                }
+                if (key == Qt::Key_Escape) {
+                    completer_->popup()->hide();
+                    event->accept();
+                    return true;
+                }
+            } else if (event->type() == QEvent::KeyRelease) {
+                auto* keyEvent = static_cast<QKeyEvent*>(event);
+                if (keyEvent->modifiers() &
+                    (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier)) {
+                    return QMainWindow::eventFilter(watched, event);
+                }
+
+                const int key = keyEvent->key();
+                const bool identifierKey =
+                    (key >= Qt::Key_A && key <= Qt::Key_Z) ||
+                    (key >= Qt::Key_0 && key <= Qt::Key_9) ||
+                    key == Qt::Key_Underscore;
+                if (identifierKey || key == Qt::Key_Backspace ||
+                    key == Qt::Key_Delete) {
+                    if (inlineCompletionTimer_) {
+                        inlineCompletionTimer_->start();
+                    } else {
+                        triggerInlineCompletion(false);
+                    }
+                } else if (key == Qt::Key_Space ||
+                           key == Qt::Key_Return ||
+                           key == Qt::Key_Enter ||
+                           key == Qt::Key_Escape) {
+                    if (completer_->popup()) {
+                        completer_->popup()->hide();
+                    }
+                }
+            }
+        }
     }
 
     if (boardCombo_ && watched == boardCombo_) {
@@ -6263,6 +7207,19 @@ void MainWindow::refreshBoardOptions() {
       const QJsonArray options = root.value("config_options").toArray();
 
       if (!options.isEmpty()) {
+          QMenu* boardOptionsMenu = nullptr;
+          if (toolsMenu_) {
+              boardOptionsMenu = new QMenu(
+                  tr("Board Options (%1)").arg(options.size()), toolsMenu_);
+              QAction* boardOptionsMenuAction = programmerMenuAction_
+                                                    ? toolsMenu_->insertMenu(
+                                                          programmerMenuAction_,
+                                                          boardOptionsMenu)
+                                                    : toolsMenu_->addMenu(
+                                                          boardOptionsMenu);
+              boardOptionMenuActions_.append(boardOptionsMenuAction);
+          }
+
           QSettings settings;
           settings.beginGroup("BoardOptions");
           settings.beginGroup(baseFqbn);
@@ -6276,10 +7233,15 @@ void MainWindow::refreshBoardOptions() {
 
               if (optId.trimmed().isEmpty() || values.isEmpty()) continue;
 
-              QMenu* subMenu = new QMenu(optLabel, toolsMenu_);
-              QAction* subMenuAction = toolsMenu_->insertMenu(programmerMenuAction_, subMenu);
-              boardOptionMenuActions_.append(subMenuAction);
-              auto* valueGroup = new QActionGroup(subMenu);
+              QMenu* subMenu = nullptr;
+              if (boardOptionsMenu) {
+                  const QString optionTitle =
+                      optLabel.trimmed().isEmpty() ? optId : optLabel;
+                  subMenu = boardOptionsMenu->addMenu(optionTitle);
+              }
+              auto* valueGroup = new QActionGroup(
+                  subMenu ? static_cast<QObject*>(subMenu)
+                          : static_cast<QObject*>(this));
               valueGroup->setExclusive(true);
 
               const QString currentSelectedValue = settings.value(optId).toString();
@@ -6302,7 +7264,11 @@ void MainWindow::refreshBoardOptions() {
                       defaultValueId = valId;
                   }
 
-                  QAction* act = subMenu->addAction(valLabel);
+                  if (!subMenu) {
+                      continue;
+                  }
+                  QAction* act = subMenu->addAction(
+                      valLabel.trimmed().isEmpty() ? valId : valLabel);
                   act->setCheckable(true);
                   act->setData(valId);
                   valueGroup->addAction(act);
@@ -6330,16 +7296,37 @@ void MainWindow::refreshBoardOptions() {
                   if (!fallbackValue.isEmpty()) {
                       settings.setValue(optId, fallbackValue);
                       settingsChanged = true;
-                      const QList<QAction*> actions = subMenu->actions();
-                      for (QAction* action : actions) {
-                          if (!action) continue;
-                          if (action->isChecked()) {
-                              action->setChecked(false);
-                          }
-                          if (action->data().toString() == fallbackValue) {
-                              action->setChecked(true);
+                      if (subMenu) {
+                          const QList<QAction*> actions = subMenu->actions();
+                          for (QAction* action : actions) {
+                              if (!action) continue;
+                              if (action->isChecked()) {
+                                  action->setChecked(false);
+                              }
+                              if (action->data().toString() == fallbackValue) {
+                                  action->setChecked(true);
+                              }
                           }
                       }
+                  }
+              }
+
+              if (subMenu) {
+                  QString activeLabel;
+                  const QList<QAction*> actions = subMenu->actions();
+                  for (QAction* action : actions) {
+                      if (action && action->isChecked()) {
+                          activeLabel = action->text().trimmed();
+                          break;
+                      }
+                  }
+                  const QString baseTitle =
+                      optLabel.trimmed().isEmpty() ? optId : optLabel;
+                  if (!activeLabel.isEmpty()) {
+                      subMenu->setTitle(
+                          tr("%1  [%2]").arg(baseTitle, activeLabel));
+                  } else {
+                      subMenu->setTitle(baseTitle);
                   }
               }
           }
@@ -6413,8 +7400,16 @@ void MainWindow::clearIncludeLibraryMenuActions() {
     includeLibraryProcess_->deleteLater();
     includeLibraryProcess_ = nullptr;
   }
-  for (QAction* a : includeLibraryMenuActions_) a->deleteLater();
+  if (includeLibraryMenu_) {
+    includeLibraryMenu_->clear();
+  }
   includeLibraryMenuActions_.clear();
+}
+
+void MainWindow::invalidateIncludeLibraryCache() {
+  includeLibraryCacheDirty_ = true;
+  includeLibraryCache_.clear();
+  clearIncludeLibraryMenuActions();
 }
 
 void MainWindow::rebuildIncludeLibraryMenu() {
@@ -6435,18 +7430,13 @@ void MainWindow::rebuildIncludeLibraryMenu() {
     includeLibraryMenuActions_.push_back(action);
   };
 
-  auto addFooterActions = [this, cliAvailable]() {
+  auto addTopActions = [this, cliAvailable]() {
     if (!includeLibraryMenu_) {
       return;
     }
 
     if (!actionAddZipLibrary_ && !actionManageLibraries_) {
       return;
-    }
-
-    if (!includeLibraryMenu_->actions().isEmpty()) {
-      QAction* separator = includeLibraryMenu_->addSeparator();
-      includeLibraryMenuActions_.push_back(separator);
     }
 
     if (actionAddZipLibrary_) {
@@ -6464,11 +7454,99 @@ void MainWindow::rebuildIncludeLibraryMenu() {
       connect(manage, &QAction::triggered, this,
               [this] { actionManageLibraries_->trigger(); });
     }
+
+    QAction* separator = includeLibraryMenu_->addSeparator();
+    includeLibraryMenuActions_.push_back(separator);
   };
+
+  auto addCachedLibraryEntries = [this, addDisabledItem]() {
+    auto normalizedLocationKey = [](QString location) {
+      location = location.trimmed().toLower();
+      if (location.isEmpty()) {
+        return QStringLiteral("other");
+      }
+      if (location == QStringLiteral("user")) {
+        return QStringLiteral("user");
+      }
+      if (location == QStringLiteral("platform")) {
+        return QStringLiteral("platform");
+      }
+      if (location == QStringLiteral("builtin") ||
+          location == QStringLiteral("ide")) {
+        return QStringLiteral("builtin");
+      }
+      return QStringLiteral("other");
+    };
+
+    auto locationLabel = [this](const QString& key) {
+      if (key == QStringLiteral("user")) {
+        return tr("Custom Libraries");
+      }
+      if (key == QStringLiteral("platform")) {
+        return tr("Platform Libraries");
+      }
+      if (key == QStringLiteral("builtin")) {
+        return tr("Built-in Libraries");
+      }
+      return tr("Other Libraries");
+    };
+
+    if (includeLibraryCache_.isEmpty()) {
+      addDisabledItem(tr("No includable installed libraries"));
+      return;
+    }
+
+    QMap<QString, QVector<IncludeLibraryEntry>> grouped;
+    for (const IncludeLibraryEntry& entry : includeLibraryCache_) {
+      grouped[normalizedLocationKey(entry.location)].push_back(entry);
+    }
+
+    bool addedAny = false;
+    auto addGroup = [this, &grouped, &locationLabel, &addedAny](const QString& key) {
+      const QVector<IncludeLibraryEntry> entries = grouped.value(key);
+      if (entries.isEmpty()) {
+        return;
+      }
+
+      QMenu* submenu = includeLibraryMenu_->addMenu(
+          tr("%1 (%2)").arg(locationLabel(key)).arg(entries.size()));
+      includeLibraryMenuActions_.push_back(submenu->menuAction());
+
+      for (const IncludeLibraryEntry& entry : entries) {
+        QAction* action = submenu->addAction(entry.name);
+        if (entry.includes.isEmpty()) {
+          action->setEnabled(false);
+          action->setToolTip(
+              tr("This library does not advertise include files."));
+          continue;
+        }
+
+        addedAny = true;
+        connect(action, &QAction::triggered, this, [this, entry] {
+          insertLibraryIncludes(entry.name, entry.includes);
+        });
+      }
+    };
+
+    addGroup(QStringLiteral("user"));
+    addGroup(QStringLiteral("platform"));
+    addGroup(QStringLiteral("builtin"));
+    addGroup(QStringLiteral("other"));
+
+    if (!addedAny) {
+      addDisabledItem(tr("No includable installed libraries"));
+    }
+  };
+
+  addTopActions();
 
   if (!cliAvailable) {
     addDisabledItem(tr("Arduino CLI unavailable"));
-    addFooterActions();
+    return;
+  }
+
+  if (!includeLibraryCacheDirty_) {
+    addCachedLibraryEntries();
     return;
   }
 
@@ -6484,8 +7562,7 @@ void MainWindow::rebuildIncludeLibraryMenu() {
   connect(process,
           QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
           this,
-          [this, process, addDisabledItem, addFooterActions](int exitCode,
-                                                              QProcess::ExitStatus) {
+          [this, process](int exitCode, QProcess::ExitStatus) {
             if (includeLibraryProcess_ == process) {
               includeLibraryProcess_ = nullptr;
             }
@@ -6495,33 +7572,33 @@ void MainWindow::rebuildIncludeLibraryMenu() {
             process->deleteLater();
 
             clearIncludeLibraryMenuActions();
-            if (!includeLibraryMenu_) {
-              return;
-            }
+            includeLibraryCache_.clear();
+            includeLibraryCacheDirty_ = true;
 
             if (exitCode != 0) {
               if (output_ && !err.trimmed().isEmpty()) {
                 output_->appendLine(tr("[Include Library] %1")
                                         .arg(QString::fromUtf8(err).trimmed()));
               }
-              addDisabledItem(tr("Failed to load installed libraries"));
-              addFooterActions();
+              if (includeLibraryMenu_ && includeLibraryMenu_->isVisible()) {
+                rebuildIncludeLibraryMenu();
+              }
               return;
             }
 
             const QJsonDocument doc = QJsonDocument::fromJson(out);
             if (!doc.isObject()) {
-              addDisabledItem(tr("Failed to parse installed libraries"));
-              addFooterActions();
+              if (output_) {
+                output_->appendLine(
+                    tr("[Include Library] Failed to parse installed libraries."));
+              }
+              if (includeLibraryMenu_ && includeLibraryMenu_->isVisible()) {
+                rebuildIncludeLibraryMenu();
+              }
               return;
             }
 
-            struct LibraryEntry final {
-              QString name;
-              QStringList includes;
-            };
-
-            QVector<LibraryEntry> entries;
+            QVector<IncludeLibraryEntry> entries;
             const QJsonArray installed =
                 doc.object().value("installed_libraries").toArray();
             entries.reserve(installed.size());
@@ -6533,62 +7610,61 @@ void MainWindow::rebuildIncludeLibraryMenu() {
               if (name.isEmpty()) {
                 continue;
               }
+              const QString version = lib.value("version").toString().trimmed();
+              const QString location =
+                  lib.value("location").toString().trimmed();
+              const QString installDir =
+                  lib.value("install_dir").toString().trimmed();
+              const QString sourceDir =
+                  lib.value("source_dir").toString().trimmed();
 
               QStringList includes;
               for (const QJsonValue& includeValue :
                    lib.value("provides_includes").toArray()) {
-                const QString include = includeValue.toString().trimmed();
+                const QString include =
+                    normalizeIncludeToken(includeValue.toString());
                 if (!include.isEmpty()) {
                   includes << include;
+                  includes << QFileInfo(include).fileName();
                 }
               }
               includes.removeDuplicates();
 
-              entries.push_back({name, includes});
+              IncludeLibraryEntry entry;
+              entry.name = name;
+              entry.version = version;
+              entry.location = location;
+              entry.installDir = installDir;
+              entry.sourceDir = sourceDir;
+              entry.includes = includes;
+              entries.push_back(std::move(entry));
             }
 
             std::sort(entries.begin(),
                       entries.end(),
-                      [](const LibraryEntry& left, const LibraryEntry& right) {
+                      [](const IncludeLibraryEntry& left, const IncludeLibraryEntry& right) {
                         return QString::localeAwareCompare(left.name, right.name) < 0;
                       });
-
-            bool addedAny = false;
-            for (const LibraryEntry& entry : entries) {
-              QAction* action = includeLibraryMenu_->addAction(entry.name);
-              includeLibraryMenuActions_.push_back(action);
-              if (entry.includes.isEmpty()) {
-                action->setEnabled(false);
-                action->setToolTip(
-                    tr("This library does not advertise include files."));
-                continue;
-              }
-              addedAny = true;
-              connect(action, &QAction::triggered, this, [this, entry] {
-                insertLibraryIncludes(entry.name, entry.includes);
-              });
+            includeLibraryCache_ = std::move(entries);
+            includeLibraryCacheDirty_ = false;
+            if (includeLibraryMenu_ && includeLibraryMenu_->isVisible()) {
+              rebuildIncludeLibraryMenu();
             }
-
-            if (!addedAny) {
-              addDisabledItem(tr("No includable installed libraries"));
-            }
-            addFooterActions();
           });
 
   connect(process, &QProcess::errorOccurred, this,
-          [this, process, addFooterActions](QProcess::ProcessError) {
+          [this, process](QProcess::ProcessError) {
     if (includeLibraryProcess_ == process) {
       includeLibraryProcess_ = nullptr;
     }
     process->deleteLater();
     clearIncludeLibraryMenuActions();
-    if (includeLibraryMenu_) {
-      QAction* failed = includeLibraryMenu_->addAction(
-          tr("Could not start Arduino CLI"));
-      failed->setEnabled(false);
-      includeLibraryMenuActions_.push_back(failed);
+    if (output_) {
+      output_->appendLine(tr("[Include Library] Could not start Arduino CLI."));
     }
-    addFooterActions();
+    if (includeLibraryMenu_ && includeLibraryMenu_->isVisible()) {
+      rebuildIncludeLibraryMenu();
+    }
   });
 
   const QStringList args = arduinoCli_->withGlobalFlags(
@@ -6816,6 +7892,406 @@ void MainWindow::rememberSuccessfulCompileArtifact(const QString& sketchFolder,
       lastSuccessfulCompile_.sketchSignature.isEmpty();
 }
 
+QString MainWindow::primarySketchInoPath(const QString& sketchFolder) const {
+  const QString normalizedSketch = normalizeSketchFolderPath(sketchFolder);
+  if (normalizedSketch.isEmpty()) {
+    return {};
+  }
+
+  const QDir dir(normalizedSketch);
+  if (!dir.exists()) {
+    return {};
+  }
+
+  const QString baseName = QFileInfo(normalizedSketch).fileName();
+  if (!baseName.isEmpty()) {
+    const QString preferred = dir.absoluteFilePath(baseName + QStringLiteral(".ino"));
+    if (QFileInfo(preferred).isFile()) {
+      return QFileInfo(preferred).absoluteFilePath();
+    }
+  }
+
+  const QStringList inos =
+      dir.entryList(QStringList{QStringLiteral("*.ino"), QStringLiteral("*.pde")},
+                    QDir::Files, QDir::Name | QDir::IgnoreCase);
+  if (inos.isEmpty()) {
+    return {};
+  }
+  return QFileInfo(dir.absoluteFilePath(inos.first())).absoluteFilePath();
+}
+
+QString MainWindow::lastCompileTimestampForSketch(const QString& sketchFolder) const {
+  const QString key = sketchSelectionKey(sketchFolder);
+  if (key.isEmpty()) {
+    return {};
+  }
+
+  QSettings settings;
+  settings.beginGroup(kSettingsGroup);
+  const QVariantMap map =
+      settings.value(kRewrittoSectionCompileTimesKey).toMap();
+  settings.endGroup();
+  return map.value(key).toString().trimmed();
+}
+
+void MainWindow::recordCompileTimestampForSketch(const QString& sketchFolder) {
+  const QString key = sketchSelectionKey(sketchFolder);
+  if (key.isEmpty()) {
+    return;
+  }
+
+  QSettings settings;
+  settings.beginGroup(kSettingsGroup);
+  QVariantMap map = settings.value(kRewrittoSectionCompileTimesKey).toMap();
+  map.insert(key, QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+  settings.setValue(kRewrittoSectionCompileTimesKey, map);
+  settings.endGroup();
+}
+
+QString MainWindow::buildRewrittoSectionBlock(const QString& sketchFolder,
+                                              QStringList* outWarnings) const {
+  QStringList warnings;
+  const QString normalizedSketch = normalizeSketchFolderPath(sketchFolder);
+
+  const QString fqbn = currentFqbn().trimmed();
+  const QString boardName =
+      boardCombo_ ? boardCombo_->currentText().trimmed() : QString{};
+  const QString port = currentPort().trimmed();
+  const QString protocol = currentPortProtocol().trimmed();
+  const QString programmer = currentProgrammer().trimmed();
+  const QString metadataUpdatedUtc =
+      QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+
+  const QString lastCompileIso = lastCompileTimestampForSketch(normalizedSketch);
+  QString lastCompileDisplay = tr("never");
+  if (!lastCompileIso.isEmpty()) {
+    const QDateTime parsed = QDateTime::fromString(lastCompileIso, Qt::ISODate);
+    lastCompileDisplay =
+        parsed.isValid() ? parsed.toUTC().toString(Qt::ISODate) : lastCompileIso;
+  }
+
+  QVector<InstalledCoreSnapshot> installedCores;
+  QVector<InstalledLibrarySnapshot> installedLibraries;
+  if (!arduinoCli_ || arduinoCli_->arduinoCliPath().trimmed().isEmpty()) {
+    warnings << tr("Arduino CLI is unavailable, so core/library versions may be incomplete.");
+  } else if (arduinoCli_->isRunning()) {
+    warnings << tr("Arduino CLI is currently busy; metadata snapshot may be stale.");
+  } else {
+    const QString cliPath = arduinoCli_->arduinoCliPath().trimmed();
+    const CommandResult coreListResult = runCommandBlocking(
+        cliPath,
+        arduinoCli_->withGlobalFlags({QStringLiteral("core"),
+                                      QStringLiteral("list"),
+                                      QStringLiteral("--json")}),
+        {}, {}, 30000);
+    if (commandSucceeded(coreListResult)) {
+      installedCores = parseInstalledCoresFromJson(coreListResult.stdoutText.toUtf8());
+    } else {
+      warnings << tr("Could not read installed cores: %1")
+                      .arg(commandErrorSummary(coreListResult));
+    }
+
+    const CommandResult libListResult = runCommandBlocking(
+        cliPath,
+        arduinoCli_->withGlobalFlags({QStringLiteral("lib"),
+                                      QStringLiteral("list"),
+                                      QStringLiteral("--json")}),
+        {}, {}, 30000);
+    if (commandSucceeded(libListResult)) {
+      installedLibraries =
+          parseInstalledLibrariesFromJson(libListResult.stdoutText.toUtf8());
+    } else {
+      warnings << tr("Could not read installed libraries: %1")
+                      .arg(commandErrorSummary(libListResult));
+    }
+  }
+
+  QString selectedCoreId;
+  const QStringList fqbnParts = fqbn.split(QLatin1Char(':'), Qt::SkipEmptyParts);
+  if (fqbnParts.size() >= 2) {
+    selectedCoreId = fqbnParts.at(0).trimmed() + QStringLiteral(":") +
+                     fqbnParts.at(1).trimmed();
+  }
+
+  QString selectedCoreDisplay = tr("(not detected)");
+  if (!selectedCoreId.isEmpty()) {
+    selectedCoreDisplay = selectedCoreId;
+    for (const InstalledCoreSnapshot& core : installedCores) {
+      if (core.id != selectedCoreId) {
+        continue;
+      }
+      const QString version =
+          core.installedVersion.trimmed().isEmpty()
+              ? tr("unknown")
+              : core.installedVersion.trimmed();
+      const QString name = core.name.trimmed();
+      selectedCoreDisplay =
+          name.isEmpty()
+              ? QStringLiteral("%1 @ %2").arg(core.id, version)
+              : QStringLiteral("%1 (%2) @ %3").arg(core.id, name, version);
+      break;
+    }
+  }
+
+  QVector<InstalledLibrarySnapshot> sketchLibraries;
+  if (!installedLibraries.isEmpty() && !normalizedSketch.isEmpty()) {
+    const QSet<QString> usedHeaders = collectSketchIncludeHeaders(normalizedSketch);
+    sketchLibraries =
+        detectSketchLibrariesFromHeaders(installedLibraries, usedHeaders);
+    if (!usedHeaders.isEmpty() && sketchLibraries.isEmpty()) {
+      warnings << tr("No installed library matched the sketch includes.");
+    }
+  }
+
+  auto printable = [this](const QString& value) {
+    const QString trimmed = value.trimmed();
+    return trimmed.isEmpty() ? tr("(none)") : trimmed;
+  };
+
+  QStringList lines;
+  lines << QString::fromLatin1(kRewrittoSectionStartMarker);
+  lines << QStringLiteral("// Written with Rewritto IDE");
+  lines << QStringLiteral("// GitHub: https://github.com/lolren/rewritto-ide");
+  lines << QStringLiteral("// Rewritto IDE version: %1")
+               .arg(QStringLiteral(REWRITTO_IDE_VERSION));
+  lines << QStringLiteral("// Metadata updated (UTC): %1").arg(metadataUpdatedUtc);
+  lines << QStringLiteral("// Last compilation (UTC): %1").arg(lastCompileDisplay);
+  lines << QStringLiteral("// Board: %1").arg(printable(boardName));
+  lines << QStringLiteral("// FQBN: %1").arg(printable(fqbn));
+  lines << QStringLiteral("// Port: %1").arg(printable(port));
+  lines << QStringLiteral("// Port protocol: %1").arg(printable(protocol));
+  lines << QStringLiteral("// Programmer: %1").arg(printable(programmer));
+  lines << QStringLiteral("// Arduino core: %1").arg(printable(selectedCoreDisplay));
+  lines << QStringLiteral("// Libraries:");
+  if (sketchLibraries.isEmpty()) {
+    lines << QStringLiteral("//   - (none detected)");
+  } else {
+    for (const InstalledLibrarySnapshot& library : sketchLibraries) {
+      const QString version =
+          library.version.trimmed().isEmpty() ? tr("unknown") : library.version.trimmed();
+      lines << QStringLiteral("//   - %1 @ %2").arg(library.name, version);
+    }
+  }
+
+  for (const QString& warning : warnings) {
+    const QString trimmed = warning.trimmed();
+    if (!trimmed.isEmpty()) {
+      lines << QStringLiteral("// Note: %1").arg(trimmed);
+    }
+  }
+  lines << QString::fromLatin1(kRewrittoSectionEndMarker);
+
+  if (outWarnings) {
+    *outWarnings = warnings;
+  }
+  return lines.join(QLatin1Char('\n'));
+}
+
+bool MainWindow::upsertRewrittoSectionInSketch(const QString& sketchFolder,
+                                               bool saveIfOpenEditor,
+                                               QString* outError,
+                                               QStringList* outWarnings) {
+  const QString normalizedSketch = normalizeSketchFolderPath(sketchFolder);
+  if (normalizedSketch.isEmpty()) {
+    if (outError) {
+      *outError = tr("Open a valid sketch first.");
+    }
+    return false;
+  }
+
+  const QString primaryPath = primarySketchInoPath(normalizedSketch);
+  if (primaryPath.isEmpty()) {
+    if (outError) {
+      *outError = tr("Could not locate the primary .ino file.");
+    }
+    return false;
+  }
+
+  QStringList warnings;
+  const QString sectionBlock =
+      buildRewrittoSectionBlock(normalizedSketch, &warnings);
+
+  QPlainTextEdit* openEditor =
+      editor_ ? editor_->editorWidgetForFile(primaryPath) : nullptr;
+  QString sourceText;
+  if (openEditor) {
+    sourceText = openEditor->toPlainText();
+  } else {
+    QFile file(primaryPath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+      if (outError) {
+        *outError = tr("Could not open '%1' for reading.")
+                        .arg(QFileInfo(primaryPath).fileName());
+      }
+      return false;
+    }
+    sourceText = QString::fromUtf8(file.readAll());
+  }
+
+  const QString updatedText = upsertRewrittoSectionText(sourceText, sectionBlock);
+  if (updatedText == sourceText) {
+    if (outWarnings) {
+      *outWarnings = warnings;
+    }
+    if (outError) {
+      outError->clear();
+    }
+    return true;
+  }
+
+  if (openEditor) {
+    QTextDocument* doc = openEditor->document();
+    if (!doc) {
+      if (outError) {
+        *outError = tr("The primary sketch editor is not available.");
+      }
+      return false;
+    }
+
+    const QTextCursor previousCursor = openEditor->textCursor();
+    const int previousAnchor = previousCursor.anchor();
+    const int previousPosition = previousCursor.position();
+
+    QTextCursor replaceCursor(doc);
+    replaceCursor.beginEditBlock();
+    replaceCursor.select(QTextCursor::Document);
+    replaceCursor.insertText(updatedText);
+    replaceCursor.endEditBlock();
+
+    QTextCursor restoredCursor(doc);
+    const int maxPos = qMax(0, doc->characterCount() - 1);
+    restoredCursor.setPosition(qBound(0, previousAnchor, maxPos));
+    restoredCursor.setPosition(qBound(0, previousPosition, maxPos),
+                               QTextCursor::KeepAnchor);
+    openEditor->setTextCursor(restoredCursor);
+
+    if (saveIfOpenEditor && editor_ && !editor_->saveFile(primaryPath)) {
+      if (outError) {
+        *outError = tr("Could not save '%1' after updating metadata.")
+                        .arg(QFileInfo(primaryPath).fileName());
+      }
+      return false;
+    }
+  } else {
+    QSaveFile save(primaryPath);
+    if (!save.open(QIODevice::WriteOnly | QIODevice::Text)) {
+      if (outError) {
+        *outError = tr("Could not open '%1' for writing.")
+                        .arg(QFileInfo(primaryPath).fileName());
+      }
+      return false;
+    }
+    const QByteArray payload = updatedText.toUtf8();
+    if (save.write(payload) != payload.size() || !save.commit()) {
+      if (outError) {
+        *outError = tr("Could not save '%1'.")
+                        .arg(QFileInfo(primaryPath).fileName());
+      }
+      return false;
+    }
+  }
+
+  if (outWarnings) {
+    *outWarnings = warnings;
+  }
+  if (outError) {
+    outError->clear();
+  }
+  return true;
+}
+
+void MainWindow::updateRewrittoSection() {
+  const QString sketchFolder = currentSketchFolderPath();
+  if (sketchFolder.isEmpty()) {
+    QMessageBox::warning(this, tr("Rewritto Section"),
+                         tr("Please open or create a sketch first."));
+    return;
+  }
+
+  QToolButton* updateButton = nullptr;
+  QString previousButtonText;
+  QString previousButtonStyle;
+  Qt::ToolButtonStyle previousButtonMode = Qt::ToolButtonIconOnly;
+  const bool previousUpdateActionEnabled =
+      actionUpdateRewrittoSection_ ? actionUpdateRewrittoSection_->isEnabled()
+                                   : false;
+  if (buildToolBar_ && actionUpdateRewrittoSection_) {
+    updateButton = qobject_cast<QToolButton*>(
+        buildToolBar_->widgetForAction(actionUpdateRewrittoSection_));
+  }
+  if (actionUpdateRewrittoSection_) {
+    actionUpdateRewrittoSection_->setEnabled(false);
+  }
+  if (updateButton) {
+    previousButtonText = updateButton->text();
+    previousButtonStyle = updateButton->styleSheet();
+    previousButtonMode = updateButton->toolButtonStyle();
+    updateButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    updateButton->setText(tr("Updating..."));
+    updateButton->setCursor(Qt::BusyCursor);
+    updateButton->setStyleSheet(
+        "QToolButton {"
+        "  padding: 4px 10px;"
+        "  border-radius: 8px;"
+        "  border: 1px solid rgba(34, 211, 238, 0.85);"
+        "  background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
+        "    stop:0 rgba(0,167,181,0.42), stop:1 rgba(34,211,238,0.25));"
+        "  font-weight: 700;"
+        "}");
+  }
+
+  const bool hadGlobalCursor = (QApplication::overrideCursor() != nullptr);
+  if (!hadGlobalCursor) {
+    QApplication::setOverrideCursor(Qt::BusyCursor);
+  }
+  if (statusBar()) {
+    statusBar()->showMessage(tr("Updating Rewritto section..."));
+  }
+  QCoreApplication::processEvents();
+
+  const auto finishVisualFeedback =
+      [this, updateButton, previousButtonText, previousButtonStyle,
+       previousButtonMode, hadGlobalCursor, previousUpdateActionEnabled]() {
+        if (updateButton) {
+          updateButton->setStyleSheet(previousButtonStyle);
+          updateButton->setText(previousButtonText);
+          updateButton->setToolButtonStyle(previousButtonMode);
+          updateButton->setCursor(Qt::ArrowCursor);
+        }
+        if (actionUpdateRewrittoSection_) {
+          actionUpdateRewrittoSection_->setEnabled(previousUpdateActionEnabled);
+        }
+        if (!hadGlobalCursor && QApplication::overrideCursor()) {
+          QApplication::restoreOverrideCursor();
+        }
+        if (statusBar()) {
+          statusBar()->showMessage(tr("Ready"), 1200);
+        }
+      };
+
+  QString error;
+  QStringList warnings;
+  if (!upsertRewrittoSectionInSketch(sketchFolder, true, &error, &warnings)) {
+    finishVisualFeedback();
+    QMessageBox::warning(this, tr("Rewritto Section"),
+                         error.isEmpty() ? tr("Could not update the sketch metadata section.")
+                                         : error);
+    return;
+  }
+
+  if (output_) {
+    for (const QString& warning : warnings) {
+      const QString trimmed = warning.trimmed();
+      if (!trimmed.isEmpty()) {
+        output_->appendLine(tr("[Rewritto section] %1").arg(trimmed));
+      }
+    }
+  }
+
+  finishVisualFeedback();
+  showToast(tr("Rewritto section updated"));
+}
+
 void MainWindow::markSketchAsChanged(const QString& filePath) {
   if (lastSuccessfulCompile_.sketchFolder.trimmed().isEmpty()) {
     return;
@@ -6934,6 +8410,7 @@ void MainWindow::beginCliProgress(CliJobKind job) {
     currentCliPhaseText_ = tr("CLI");
   }
   cliBusy_->setRange(0, 100);
+  cliBusy_->setFormat(QStringLiteral("%p%"));
   setCliProgressValue(6, tr("%1 · preparing").arg(currentCliPhaseText_));
   cliBusyLabel_->show();
   cliBusy_->show();
@@ -7041,6 +8518,7 @@ void MainWindow::setCliProgressValue(int value, const QString& phaseText) {
   if (bounded >= cliBusy_->value() || bounded <= 6) {
     cliBusy_->setValue(bounded);
   }
+  cliBusy_->setFormat(QStringLiteral("%1%").arg(bounded));
   if (cliBusyLabel_ && !phaseText.trimmed().isEmpty()) {
     cliBusyLabel_->setText(phaseText);
   }
@@ -7072,13 +8550,110 @@ QString MainWindow::cliJobLabel(CliJobKind job) const {
 
 void MainWindow::updateStopActionState() {
   const bool busy = arduinoCli_ && arduinoCli_->isRunning();
+  const bool showBusyUi = busy || lastCliJobKind_ != CliJobKind::None;
+  QAction* activeBuildAction = nullptr;
+  QString activeBuildText;
+  switch (lastCliJobKind_) {
+    case CliJobKind::Compile:
+      activeBuildAction = actionVerify_;
+      activeBuildText = tr("Verifying...");
+      break;
+    case CliJobKind::UploadCompile:
+      activeBuildAction = actionUpload_;
+      activeBuildText = tr("Building...");
+      break;
+    case CliJobKind::Upload:
+      activeBuildAction = actionJustUpload_;
+      activeBuildText = tr("Uploading...");
+      break;
+    case CliJobKind::UploadUsingProgrammer:
+      activeBuildAction = actionUpload_;
+      activeBuildText = tr("Uploading...");
+      break;
+    default:
+      break;
+  }
+
+  auto styleBuildButton = [this, showBusyUi, activeBuildAction,
+                           activeBuildText](QAction* action) {
+    if (!buildToolBar_ || !action) {
+      return;
+    }
+    auto* button = qobject_cast<QToolButton*>(buildToolBar_->widgetForAction(action));
+    if (!button) {
+      return;
+    }
+    const bool isActive = showBusyUi && action == activeBuildAction;
+    if (isActive) {
+      button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+      button->setAutoRaise(false);
+      button->setIcon(action->icon());
+      button->setText(activeBuildText);
+      button->setCursor(Qt::BusyCursor);
+      button->setStyleSheet(
+          "QToolButton {"
+          "  padding: 4px 10px;"
+          "  border-radius: 8px;"
+          "  border: 1px solid rgba(34, 211, 238, 0.85);"
+          "  background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
+          "    stop:0 rgba(0,167,181,0.42), stop:1 rgba(34,211,238,0.25));"
+          "  font-weight: 700;"
+          "}"
+          "QToolButton:disabled { color: palette(button-text); opacity: 1; }");
+    } else {
+      button->setIcon(action->icon());
+      button->setText(action->text());
+      button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+      button->setAutoRaise(false);
+      button->setCursor(Qt::ArrowCursor);
+      button->setStyleSheet(QString{});
+      button->setVisible(true);
+    }
+  };
+
+  styleBuildButton(actionVerify_);
+  styleBuildButton(actionUpload_);
+  styleBuildButton(actionJustUpload_);
+
   if (actionStop_) {
     actionStop_->setEnabled(busy);
     if (buildToolBar_) {
       if (QWidget* w = buildToolBar_->widgetForAction(actionStop_)) {
+        if (auto* stopButton = qobject_cast<QToolButton*>(w)) {
+          if (busy) {
+            stopButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+            stopButton->setText(tr("Stop"));
+            stopButton->setAutoRaise(false);
+            stopButton->setStyleSheet(
+                "QToolButton {"
+                "  padding: 4px 10px;"
+                "  border-radius: 8px;"
+                "  border: 1px solid rgba(239, 68, 68, 0.85);"
+                "  background: rgba(239, 68, 68, 0.18);"
+                "  font-weight: 700;"
+                "}");
+          } else {
+            stopButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
+            stopButton->setText(QString{});
+            stopButton->setAutoRaise(true);
+            stopButton->setStyleSheet(QString{});
+          }
+        }
         w->setVisible(busy);
       }
     }
+  }
+  if (actionVerify_) {
+    actionVerify_->setEnabled(!showBusyUi);
+  }
+  if (actionUpload_) {
+    actionUpload_->setEnabled(!showBusyUi);
+  }
+  if (actionUploadUsingProgrammer_) {
+    actionUploadUsingProgrammer_->setEnabled(!showBusyUi);
+  }
+  if (actionUpdateRewrittoSection_) {
+    actionUpdateRewrittoSection_->setEnabled(!showBusyUi);
   }
   updateUploadActionStates();
 }
@@ -7159,6 +8734,7 @@ void MainWindow::restartLanguageServer() {
   const QString cliConfig = arduinoCli_->arduinoCliConfigPath().trimmed();
   const QString fqbn = currentFqbn().trimmed();
   const QString rootUri = toFileUri(sketchFolder);
+  const bool hasPrimaryIno = !primarySketchInoPath(sketchFolder).isEmpty();
 
   const QString alsPath =
       resolveExecutable({QStringLiteral("arduino-language-server")});
@@ -7190,11 +8766,12 @@ void MainWindow::restartLanguageServer() {
     return;
   }
 
-  if (!clangdPath.isEmpty()) {
+  if (!clangdPath.isEmpty() && !hasPrimaryIno) {
     const QStringList args = {
         QStringLiteral("--background-index"),
         QStringLiteral("--header-insertion=never"),
         QStringLiteral("--completion-style=detailed"),
+        QStringLiteral("--log=error"),
     };
     lsp_->start(clangdPath, args, rootUri);
     if (output_) {
@@ -7206,12 +8783,26 @@ void MainWindow::restartLanguageServer() {
 
   if (!lspUnavailableNoticeShown_) {
     lspUnavailableNoticeShown_ = true;
-    if (output_) {
-      output_->appendLine(
-          tr("[LSP] No supported language server executable found. "
-             "Install `clangd` or `arduino-language-server` to enable code intelligence."));
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+    const bool alreadyNotified =
+        settings.value(kLspMissingServerNotifiedKey, false).toBool();
+    if (!alreadyNotified) {
+      settings.setValue(kLspMissingServerNotifiedKey, true);
+      if (output_) {
+        if (hasPrimaryIno) {
+          output_->appendLine(
+              tr("[LSP] Arduino language server not found. "
+                 "clangd fallback is disabled for .ino sketches. "
+                 "Install `arduino-language-server` to enable full code intelligence."));
+        } else {
+          output_->appendLine(
+              tr("[LSP] No supported language server executable found. "
+                 "Install `clangd` or `arduino-language-server` to enable code intelligence."));
+        }
+      }
     }
-    showToast(tr("Code intelligence disabled: no language server found."));
+    settings.endGroup();
   }
 }
 
@@ -7805,10 +9396,65 @@ void MainWindow::showSelectBoardDialog() {
   dialog->setWindowTitle(tr("Select Board"));
   dialog->setMinimumSize(700, 500);
 
+  auto* loadingDialog = new QProgressDialog(
+      tr("Loading boards and cores from Arduino CLI..."), QString(), 0, 0, this);
+  loadingDialog->setWindowTitle(tr("Select Board"));
+  loadingDialog->setWindowModality(Qt::WindowModal);
+  loadingDialog->setCancelButton(nullptr);
+  loadingDialog->setMinimumDuration(0);
+  loadingDialog->setAutoClose(false);
+  loadingDialog->setAutoReset(false);
+  loadingDialog->show();
+
+  const bool previousBoardComboEnabled = boardCombo_ ? boardCombo_->isEnabled() : false;
+  const bool previousSelectBoardEnabled =
+      actionSelectBoard_ ? actionSelectBoard_->isEnabled() : false;
+  if (boardCombo_) {
+    boardCombo_->setEnabled(false);
+    boardCombo_->setCursor(Qt::BusyCursor);
+  }
+  if (actionSelectBoard_) {
+    actionSelectBoard_->setEnabled(false);
+  }
+  const bool hadGlobalCursor = (QApplication::overrideCursor() != nullptr);
+  if (!hadGlobalCursor) {
+    QApplication::setOverrideCursor(Qt::BusyCursor);
+  }
+  if (statusBar()) {
+    statusBar()->showMessage(tr("Loading board list..."));
+  }
+  QCoreApplication::processEvents();
+
+  auto finishLoadingVisuals = [this, loadingDialog, hadGlobalCursor,
+                               previousBoardComboEnabled,
+                               previousSelectBoardEnabled]() {
+    if (loadingDialog) {
+      loadingDialog->hide();
+      loadingDialog->deleteLater();
+    }
+    if (boardCombo_) {
+      boardCombo_->setEnabled(previousBoardComboEnabled);
+      boardCombo_->setCursor(Qt::ArrowCursor);
+    }
+    if (actionSelectBoard_) {
+      actionSelectBoard_->setEnabled(previousSelectBoardEnabled);
+    }
+    if (!hadGlobalCursor && QApplication::overrideCursor()) {
+      QApplication::restoreOverrideCursor();
+    }
+    if (statusBar()) {
+      statusBar()->showMessage(tr("Ready"), 1200);
+    }
+  };
+
   // Fetch all available boards
   QProcess* p = new QProcess(this);
-  connect(p, &QProcess::finished, this, [this, dialog, p](int exitCode, QProcess::ExitStatus) {
+  connect(p, &QProcess::finished, this, [this, dialog, p, finishLoadingVisuals](int exitCode, QProcess::ExitStatus) {
+    finishLoadingVisuals();
+
     if (!boardSelectorDialogOpen_) {
+      dialog->deleteLater();
+      p->deleteLater();
       return;
     }
 
@@ -7906,8 +9552,12 @@ void MainWindow::showSelectBoardDialog() {
     boardSelectorDialogOpen_ = false;
   });
 
-  connect(p, &QProcess::errorOccurred, this, [this, dialog, p](QProcess::ProcessError) {
+  connect(p, &QProcess::errorOccurred, this, [this, dialog, p, finishLoadingVisuals](QProcess::ProcessError) {
+    finishLoadingVisuals();
+
     if (!boardSelectorDialogOpen_) {
+      dialog->deleteLater();
+      p->deleteLater();
       return;
     }
 
@@ -9029,6 +10679,13 @@ void MainWindow::showCommandPalette() {
           tr("Import and apply boards/libs/preferences from a profile file"));
   addItem(QStringLiteral("generateProjectLockfile"), tr("Generate Project Lockfile"),
           tr("Write rewritto.lock for the current sketch"));
+  addItem(QStringLiteral("addZipLibrary"), tr("Add .ZIP Library"),
+          tr("Install a library from a ZIP archive"));
+  addItem(QStringLiteral("updateRewrittoSection"), tr("Update Rewritto Section"),
+          tr("Insert/update sketch metadata block at the top of the main .ino"));
+  addItem(QStringLiteral("toggleAutoRewrittoSection"),
+          tr("Toggle Rewritto Section Auto-update"),
+          tr("Enable/disable auto metadata updates during verify/upload"));
   addItem(QStringLiteral("bootstrapProjectLockfile"),
           tr("Bootstrap Project from Lockfile"),
           tr("Install board/library dependencies from rewritto.lock"));
@@ -9107,6 +10764,14 @@ void MainWindow::showCommandPalette() {
       importSetupProfile();
     } else if (commandId == QStringLiteral("generateProjectLockfile")) {
       generateProjectLockfile();
+    } else if (commandId == QStringLiteral("addZipLibrary")) {
+      addZipLibrary();
+    } else if (commandId == QStringLiteral("updateRewrittoSection")) {
+      updateRewrittoSection();
+    } else if (commandId == QStringLiteral("toggleAutoRewrittoSection")) {
+      if (actionAutoUpdateRewrittoSection_) {
+        actionAutoUpdateRewrittoSection_->toggle();
+      }
     } else if (commandId == QStringLiteral("bootstrapProjectLockfile")) {
       bootstrapProjectLockfile();
     } else if (commandId == QStringLiteral("environmentDoctor")) {
@@ -9500,9 +11165,340 @@ void MainWindow::showGoToSymbol() {
     });
 }
 
+QStringList MainWindow::fallbackInlineCompletionWords(
+    const QString& sketchFolder,
+    QTextDocument* doc) const {
+  Q_UNUSED(doc);
+  QSet<QString> words;
+  for (const QString& base : arduinoInlineCompletionBaseWords()) {
+    words.insert(base);
+  }
+
+  auto addToken = [&words](QString token) {
+    token = token.trimmed();
+    if (token.size() < 2) {
+      return;
+    }
+    if (!token.front().isLetter() && token.front() != QLatin1Char('_')) {
+      return;
+    }
+    words.insert(token);
+  };
+
+  const QString normalizedSketch = normalizeSketchFolderPath(sketchFolder);
+  if (!normalizedSketch.isEmpty()) {
+    const QSet<QString> usedHeaders = collectSketchIncludeHeaders(normalizedSketch);
+    for (const QString& header : usedHeaders) {
+      addToken(header);
+      const QFileInfo info(header);
+      addToken(info.completeBaseName());
+      addToken(info.fileName());
+    }
+  }
+
+  for (const IncludeLibraryEntry& entry : includeLibraryCache_) {
+    addToken(entry.name);
+    for (const QString& include : entry.includes) {
+      addToken(include);
+      const QFileInfo info(include);
+      addToken(info.completeBaseName());
+      addToken(info.fileName());
+    }
+  }
+
+  QStringList out = words.values();
+  std::sort(out.begin(), out.end(),
+            [](const QString& left, const QString& right) {
+              return QString::localeAwareCompare(left, right) < 0;
+            });
+  return out;
+}
+
+void MainWindow::triggerInlineCompletion(bool manual) {
+  if (!editor_ || !completionModel_ || !completer_) {
+    return;
+  }
+
+  auto* plain = qobject_cast<QPlainTextEdit*>(editor_->currentEditorWidget());
+  const QString filePath = editor_->currentFilePath().trimmed();
+  if (!plain || !plain->document() || filePath.isEmpty()) {
+    if (completer_->popup()) {
+      completer_->popup()->hide();
+    }
+    return;
+  }
+
+  int replaceStart = -1;
+  int replaceEnd = -1;
+  const QString prefix = completionPrefixAtCursor(plain, &replaceStart, &replaceEnd);
+  if (prefix.isEmpty() || (!manual && prefix.size() < 2)) {
+    if (completer_->popup()) {
+      completer_->popup()->hide();
+    }
+    return;
+  }
+
+  const int requestToken = ++inlineCompletionToken_;
+  auto buildFallbackItems = [this, filePath, plain]() {
+    QJsonArray items;
+    const QString sketchFolder = normalizeSketchFolderPath(filePath);
+    const QStringList words =
+        fallbackInlineCompletionWords(sketchFolder, plain->document());
+    for (const QString& word : words) {
+      QJsonObject item;
+      item.insert(QStringLiteral("label"), word);
+      item.insert(QStringLiteral("insertText"), word);
+      items.append(item);
+    }
+    return items;
+  };
+
+  auto showFromItems =
+      [this, filePath, prefix, requestToken](const QJsonArray& rawItems) {
+        if (!editor_ || !completionModel_ || !completer_ ||
+            requestToken != inlineCompletionToken_) {
+          return;
+        }
+
+        auto* livePlain =
+            qobject_cast<QPlainTextEdit*>(editor_->currentEditorWidget());
+        if (!livePlain || !livePlain->document()) {
+          return;
+        }
+        if (editor_->currentFilePath().trimmed() != filePath) {
+          return;
+        }
+
+        int liveStart = -1;
+        int liveEnd = -1;
+        const QString livePrefix =
+            completionPrefixAtCursor(livePlain, &liveStart, &liveEnd);
+        if (livePrefix.isEmpty() ||
+            livePrefix.compare(prefix, Qt::CaseInsensitive) != 0) {
+          return;
+        }
+
+        completionModel_->clear();
+        QSet<QString> seen;
+        int added = 0;
+        for (const QJsonValue& value : rawItems) {
+          if (!value.isObject()) {
+            continue;
+          }
+          const QJsonObject obj = value.toObject();
+          const QString label =
+              obj.value(QStringLiteral("label")).toString().trimmed();
+          if (label.isEmpty()) {
+            continue;
+          }
+
+          QString insertText = obj.value(QStringLiteral("insertText")).toString();
+          if (insertText.isEmpty()) {
+            insertText = label;
+          }
+
+          if (!label.startsWith(livePrefix, Qt::CaseInsensitive) &&
+              !insertText.startsWith(livePrefix, Qt::CaseInsensitive)) {
+            continue;
+          }
+          if (insertText.compare(livePrefix, Qt::CaseInsensitive) == 0 ||
+              label.compare(livePrefix, Qt::CaseInsensitive) == 0) {
+            continue;
+          }
+
+          const QString dedupeKey = insertText.toLower();
+          if (seen.contains(dedupeKey)) {
+            continue;
+          }
+          seen.insert(dedupeKey);
+
+          auto* item = new QStandardItem(label);
+          item->setData(label, kCompletionRoleLabel);
+          item->setData(insertText, kCompletionRoleInsertText);
+          item->setData(obj.value(QStringLiteral("textEdit")).toObject(),
+                        kCompletionRoleTextEdit);
+          item->setData(obj.value(QStringLiteral("additionalTextEdits")).toArray(),
+                        kCompletionRoleAdditionalEdits);
+          item->setData(obj.value(QStringLiteral("insertTextFormat")).toInt(1),
+                        kCompletionRoleInsertTextFormat);
+          item->setData(obj, kCompletionRoleLspItem);
+          const QString detail =
+              obj.value(QStringLiteral("detail")).toString().trimmed();
+          if (!detail.isEmpty()) {
+            item->setToolTip(detail);
+          }
+          completionModel_->appendRow(item);
+          ++added;
+          if (added >= 80) {
+            break;
+          }
+        }
+
+        if (completionModel_->rowCount() <= 0) {
+          if (completer_->popup()) {
+            completer_->popup()->hide();
+          }
+          return;
+        }
+
+        inlineCompletionReplaceStart_ = liveStart;
+        inlineCompletionReplaceEnd_ = liveEnd;
+        inlineCompletionFilePath_ = filePath;
+
+        completer_->setWidget(livePlain);
+        // QCompleter installs its own event filter on the editor widget.
+        // Reinstall ours after that so Enter/Tab handling for inline completion
+        // wins over default newline behavior.
+        livePlain->removeEventFilter(this);
+        livePlain->installEventFilter(this);
+        if (auto* viewport = livePlain->viewport()) {
+          viewport->removeEventFilter(this);
+          viewport->installEventFilter(this);
+        }
+        completer_->setCompletionPrefix(livePrefix);
+        if (auto* popup = completer_->popup()) {
+          popup->setCurrentIndex(completionModel_->index(0, 0));
+          const int rows = qMin(8, completionModel_->rowCount());
+          const int rowHeight = qMax(20, popup->sizeHintForRow(0));
+          const int popupHeight = qMax(80, (rows * rowHeight) + 8);
+          const int popupWidth =
+              qMax(240, popup->sizeHintForColumn(0) + 36);
+          QRect rect = livePlain->cursorRect();
+          rect.setWidth(popupWidth);
+          rect.translate(0, -(popupHeight + rect.height() + 8));
+          if (rect.top() < 4) {
+            rect = livePlain->cursorRect();
+            rect.setWidth(popupWidth);
+            rect.translate(0, rect.height() + 4);
+          }
+          completer_->complete(rect);
+        } else {
+          completer_->complete();
+        }
+      };
+
+  if (lsp_ && lsp_->isReady()) {
+    const QTextCursor cursor = plain->textCursor();
+    const QTextBlock block = cursor.block();
+    const int line = qMax(0, block.blockNumber());
+    const int character = qMax(0, cursor.position() - block.position());
+    const QJsonObject params{
+        {QStringLiteral("textDocument"),
+         QJsonObject{{QStringLiteral("uri"), toFileUri(filePath)}}},
+        {QStringLiteral("position"),
+         QJsonObject{{QStringLiteral("line"), line},
+                     {QStringLiteral("character"), character}}},
+    };
+
+    lsp_->request(
+        QStringLiteral("textDocument/completion"), params,
+        [this, showFromItems, buildFallbackItems,
+         requestToken](const QJsonValue& result, const QJsonObject& error) {
+          if (requestToken != inlineCompletionToken_) {
+            return;
+          }
+          if (!error.isEmpty()) {
+            showFromItems(buildFallbackItems());
+            return;
+          }
+          QJsonArray completionItems;
+          if (result.isArray()) {
+            completionItems = result.toArray();
+          } else if (result.isObject()) {
+            completionItems =
+                result.toObject().value(QStringLiteral("items")).toArray();
+          }
+          if (completionItems.isEmpty()) {
+            completionItems = buildFallbackItems();
+          }
+          showFromItems(completionItems);
+        });
+    return;
+  }
+
+  showFromItems(buildFallbackItems());
+}
+
+void MainWindow::applyInlineCompletionFromIndex(const QModelIndex& index) {
+  if (!index.isValid() || !editor_) {
+    return;
+  }
+
+  auto* plain = qobject_cast<QPlainTextEdit*>(editor_->currentEditorWidget());
+  const QString filePath = editor_->currentFilePath().trimmed();
+  if (!plain || !plain->document() || filePath.isEmpty()) {
+    return;
+  }
+
+  QTextDocument* doc = plain->document();
+  int startPos = inlineCompletionReplaceStart_;
+  int endPos = inlineCompletionReplaceEnd_;
+  if (startPos < 0 || endPos < startPos) {
+    completionPrefixAtCursor(plain, &startPos, &endPos);
+  }
+
+  QString insertText = index.data(kCompletionRoleInsertText).toString();
+  if (insertText.isEmpty()) {
+    insertText = index.data(kCompletionRoleLabel).toString();
+  }
+
+  const QJsonObject textEditObj = index.data(kCompletionRoleTextEdit).toJsonObject();
+  if (!textEditObj.isEmpty()) {
+    QJsonObject rangeObj = textEditObj.value(QStringLiteral("range")).toObject();
+    if (rangeObj.isEmpty()) {
+      rangeObj = textEditObj.value(QStringLiteral("replace")).toObject();
+    }
+    if (!rangeObj.isEmpty() &&
+        lspRangeToDocumentOffsets(doc, rangeObj, &startPos, &endPos)) {
+      // Range was resolved from LSP textEdit.
+    }
+    const QString fromEdit = textEditObj.value(QStringLiteral("newText")).toString();
+    if (!fromEdit.isEmpty()) {
+      insertText = fromEdit;
+    }
+  }
+
+  const QVariant insertTextFormatValue =
+      index.data(kCompletionRoleInsertTextFormat);
+  const int insertTextFormat =
+      insertTextFormatValue.isValid() ? insertTextFormatValue.toInt() : 1;
+  if (insertTextFormat == 2) {
+    if (auto* codeEditor = qobject_cast<CodeEditor*>(plain)) {
+      codeEditor->insertSnippet(startPos, endPos, insertText);
+    } else {
+      QTextCursor c(doc);
+      c.setPosition(startPos);
+      c.setPosition(endPos, QTextCursor::KeepAnchor);
+      c.insertText(insertText);
+    }
+  } else {
+    QTextCursor c(doc);
+    c.setPosition(startPos);
+    c.setPosition(endPos, QTextCursor::KeepAnchor);
+    c.insertText(insertText);
+  }
+
+  const QJsonArray additional =
+      index.data(kCompletionRoleAdditionalEdits).toJsonArray();
+  if (!additional.isEmpty()) {
+    QJsonObject ws;
+    ws.insert(QStringLiteral("changes"),
+              QJsonObject{{toFileUri(filePath), additional}});
+    (void)applyWorkspaceEdit(ws);
+  }
+
+  if (completer_ && completer_->popup()) {
+    completer_->popup()->hide();
+  }
+  plain->setFocus(Qt::OtherFocusReason);
+}
+
 void MainWindow::requestCompletion() {
-  if (!lsp_ || !lsp_->isReady() || !editor_) {
-    showToast(tr("Language server is not ready."));
+  if (!editor_) {
+    return;
+  }
+  if (!lsp_ || !lsp_->isReady()) {
+    triggerInlineCompletion(true);
     return;
   }
 
@@ -9655,9 +11651,106 @@ void MainWindow::requestCompletion() {
       });
 }
 
+void MainWindow::scheduleHoverBusyIndicator(const QPoint& globalPos, int token) {
+  hoverBusyPendingToken_ = token;
+  hoverBusyIndicatorPos_ = globalPos;
+  if (hoverBusyIndicator_) {
+    hoverBusyIndicator_->hide();
+  }
+  if (hoverBusyIndicatorTimer_) {
+    hoverBusyIndicatorTimer_->start();
+  } else {
+    showHoverBusyIndicator(globalPos);
+  }
+}
+
+void MainWindow::showHoverBusyIndicator(const QPoint& globalPos) {
+  if (!hoverBusyIndicator_) {
+    hoverBusyIndicator_ =
+        new QWidget(nullptr, Qt::ToolTip | Qt::FramelessWindowHint);
+    hoverBusyIndicator_->setObjectName(QStringLiteral("HoverBusyIndicator"));
+    auto* layout = new QVBoxLayout(hoverBusyIndicator_);
+    layout->setContentsMargins(10, 8, 10, 8);
+    layout->setSpacing(6);
+
+    hoverBusyIndicatorLabel_ =
+        new QLabel(tr("Resolving symbol..."), hoverBusyIndicator_);
+    hoverBusyIndicatorLabel_->setObjectName(QStringLiteral("HoverBusyLabel"));
+    hoverBusyIndicatorLabel_->setAlignment(Qt::AlignCenter);
+
+    hoverBusyIndicatorBar_ = new QProgressBar(hoverBusyIndicator_);
+    hoverBusyIndicatorBar_->setRange(0, 0);
+    hoverBusyIndicatorBar_->setTextVisible(false);
+    hoverBusyIndicatorBar_->setFixedSize(130, 6);
+
+    layout->addWidget(hoverBusyIndicatorLabel_);
+    layout->addWidget(hoverBusyIndicatorBar_, 0, Qt::AlignCenter);
+  }
+
+  const QColor panelColor = palette().window().color();
+  const QColor borderColor = palette().mid().color();
+  const QColor textColor = palette().windowText().color();
+  const QColor accentColor = palette().highlight().color();
+  hoverBusyIndicator_->setStyleSheet(
+      QStringLiteral(
+          "QWidget#HoverBusyIndicator {"
+          "  background: %1;"
+          "  border: 1px solid %2;"
+          "  border-radius: 10px;"
+          "}"
+          "QLabel#HoverBusyLabel {"
+          "  color: %3;"
+          "  font-size: 10px;"
+          "}"
+          "QProgressBar {"
+          "  background: %4;"
+          "  border: 0;"
+          "  border-radius: 3px;"
+          "}"
+          "QProgressBar::chunk {"
+          "  background: %5;"
+          "  border-radius: 3px;"
+          "}")
+          .arg(panelColor.name(), borderColor.name(), textColor.name(),
+               panelColor.darker(108).name(), accentColor.name()));
+
+  hoverBusyIndicator_->adjustSize();
+  QPoint pos = globalPos;
+  pos.rx() -= hoverBusyIndicator_->width() / 2;
+  pos.ry() -= hoverBusyIndicator_->height() + 14;
+
+  QScreen* screen = QGuiApplication::screenAt(globalPos);
+  if (!screen) {
+    screen = QGuiApplication::primaryScreen();
+  }
+  if (screen) {
+    const QRect available = screen->availableGeometry();
+    pos.rx() = qBound(available.left(), pos.x(),
+                      available.right() - hoverBusyIndicator_->width());
+    pos.ry() = qBound(available.top(), pos.y(),
+                      available.bottom() - hoverBusyIndicator_->height());
+  }
+
+  hoverBusyIndicator_->move(pos);
+  hoverBusyIndicator_->show();
+  hoverBusyIndicator_->raise();
+}
+
+void MainWindow::hideHoverBusyIndicator(int token) {
+  if (token != hoverBusyToken_) {
+    return;
+  }
+  hoverBusyPendingToken_ = 0;
+  if (hoverBusyIndicatorTimer_) {
+    hoverBusyIndicatorTimer_->stop();
+  }
+  if (hoverBusyIndicator_) {
+    hoverBusyIndicator_->hide();
+  }
+}
+
 void MainWindow::showHover() {
-  if (!lsp_ || !lsp_->isReady() || !editor_) {
-    showToast(tr("Language server is not ready."));
+  if (!editor_) {
     return;
   }
 
@@ -9671,6 +11764,244 @@ void MainWindow::showHover() {
   const QTextBlock block = cursor.block();
   const int line = qMax(0, block.blockNumber());
   const int character = qMax(0, cursor.position() - block.position());
+  const QPoint globalPos = plain->mapToGlobal(plain->cursorRect().bottomRight());
+  showHoverAtPosition(plain, filePath, line, character, globalPos, false);
+}
+
+bool MainWindow::resolveSymbolFallbackAtPosition(
+    const QString& filePath,
+    int line,
+    int character,
+    QString* outHoverText,
+    QString* outDefinitionPath,
+    int* outDefinitionLine,
+    int* outDefinitionColumn) const {
+  if (!editor_) {
+    return false;
+  }
+
+  QPlainTextEdit* plain = editor_->editorWidgetForFile(filePath);
+  if (!plain) {
+    plain = editor_->currentEditorWidget();
+  }
+  if (!plain || !plain->document()) {
+    return false;
+  }
+
+  QString symbol = symbolAtDocumentPosition(plain->document(), line, character);
+  if (symbol.isEmpty()) {
+    const QTextBlock block = plain->document()->findBlockByNumber(qMax(0, line));
+    if (block.isValid()) {
+      symbol = identifierNearColumn(block.text(), qMax(1, character + 1)).trimmed();
+    }
+  }
+  if (symbol.isEmpty()) {
+    return false;
+  }
+
+  const QString sketchFolder = normalizeSketchFolderPath(filePath);
+  QStringList roots;
+  if (!sketchFolder.isEmpty()) {
+    roots << sketchFolder;
+  }
+  const QSet<QString> usedHeaders =
+      sketchFolder.isEmpty() ? QSet<QString>{}
+                             : collectSketchIncludeHeaders(sketchFolder);
+
+  QString sketchbookDir;
+  {
+    QSettings settings;
+    settings.beginGroup(QStringLiteral("Preferences"));
+    sketchbookDir = settings.value(QStringLiteral("sketchbookDir")).toString().trimmed();
+    settings.endGroup();
+  }
+  if (sketchbookDir.isEmpty()) {
+    sketchbookDir = defaultSketchbookDir();
+  }
+  if (!sketchbookDir.isEmpty()) {
+    roots << QDir(sketchbookDir).absoluteFilePath(QStringLiteral("libraries"));
+  }
+
+  for (const IncludeLibraryEntry& entry : includeLibraryCache_) {
+    bool includeMatches = usedHeaders.isEmpty();
+    if (!includeMatches) {
+      for (const QString& include : entry.includes) {
+        const QString normalized = normalizeIncludeToken(include);
+        if (normalized.isEmpty()) {
+          continue;
+        }
+        if (usedHeaders.contains(normalized) ||
+            usedHeaders.contains(QFileInfo(normalized).fileName())) {
+          includeMatches = true;
+          break;
+        }
+      }
+    }
+    if (!includeMatches && !entry.name.isEmpty()) {
+      for (const QString& header : usedHeaders) {
+        if (header.startsWith(entry.name, Qt::CaseInsensitive)) {
+          includeMatches = true;
+          break;
+        }
+      }
+    }
+    if (!includeMatches) {
+      continue;
+    }
+    if (!entry.sourceDir.trimmed().isEmpty()) {
+      roots << entry.sourceDir.trimmed();
+    }
+    if (!entry.installDir.trimmed().isEmpty()) {
+      roots << entry.installDir.trimmed();
+    }
+  }
+
+  const QString tempRoot = QDir(QStandardPaths::writableLocation(
+                                    QStandardPaths::TempLocation))
+                               .absoluteFilePath(QStringLiteral("rewritto"));
+  roots << QDir(tempRoot).absoluteFilePath(QStringLiteral("build/libraries"))
+        << QDir(tempRoot).absoluteFilePath(QStringLiteral("build/core"))
+        << QDir(tempRoot).absoluteFilePath(QStringLiteral("upload/libraries"))
+        << QDir(tempRoot).absoluteFilePath(QStringLiteral("upload/core"))
+        << QDir(tempRoot).absoluteFilePath(
+               QStringLiteral("upload-programmer/libraries"))
+        << QDir(tempRoot).absoluteFilePath(QStringLiteral("upload-programmer/core"));
+
+  const QVector<SymbolSearchMatch> matches =
+      findSymbolMatchesInRoots(symbol, roots, sketchFolder, filePath, line + 1, 8);
+  if (matches.isEmpty()) {
+    return false;
+  }
+
+  SymbolSearchMatch first = matches.first();
+  const QString normalizedSketch =
+      sketchFolder.isEmpty()
+          ? QString{}
+          : QDir::fromNativeSeparators(QDir(sketchFolder).absolutePath());
+  const QString sketchPrefix = normalizedSketch + QLatin1Char('/');
+  for (const SymbolSearchMatch& candidate : matches) {
+    const QString candidatePath = QDir::fromNativeSeparators(
+        QFileInfo(candidate.filePath).absoluteFilePath());
+    const bool inSketch =
+        !normalizedSketch.isEmpty() &&
+        (candidatePath == normalizedSketch ||
+         candidatePath.startsWith(sketchPrefix));
+    if (!inSketch) {
+      first = candidate;
+      break;
+    }
+  }
+  if (outDefinitionPath) {
+    *outDefinitionPath = first.filePath;
+  }
+  if (outDefinitionLine) {
+    *outDefinitionLine = first.line;
+  }
+  if (outDefinitionColumn) {
+    *outDefinitionColumn = qMax(1, first.column);
+  }
+
+  if (outHoverText) {
+    QStringList lines;
+    lines << tr("%1 (fallback lookup)").arg(symbol)
+          << first.origin
+          << tr("Definition candidate: %1:%2")
+                 .arg(first.filePath)
+                 .arg(first.line);
+    if (!first.snippet.isEmpty()) {
+      lines << first.snippet;
+    }
+    const int extraCount = matches.size() - 1;
+    if (extraCount > 0) {
+      lines << tr("%1 additional match(es) found. Press F12 to open first match.")
+                   .arg(extraCount);
+    } else {
+      lines << tr("Press F12 to open this definition candidate.");
+    }
+    *outHoverText = lines.join(QLatin1Char('\n'));
+  }
+
+  return true;
+}
+
+void MainWindow::showHoverAtPosition(QPlainTextEdit* plain,
+                                     const QString& filePath,
+                                     int line,
+                                     int character,
+                                     const QPoint& globalPos,
+                                     bool silent) {
+  if (!plain || filePath.trimmed().isEmpty()) {
+    return;
+  }
+
+  const int hoverToken = ++hoverBusyToken_;
+  scheduleHoverBusyIndicator(globalPos, hoverToken);
+
+  QPointer<QPlainTextEdit> safePlain(plain);
+  auto showResolvedHover = [this, safePlain, filePath, globalPos, line, character,
+                            silent, hoverToken](const QString& hoverText,
+                                    const QString& definitionPath,
+                                    int definitionLine) {
+    if (hoverToken != hoverBusyToken_) {
+      return;
+    }
+    hideHoverBusyIndicator(hoverToken);
+    if (!safePlain) {
+      return;
+    }
+    QString shown = hoverText.trimmed();
+    if (shown.isEmpty()) {
+      QString fallbackText;
+      QString fallbackPath;
+      int fallbackLine = 0;
+      int fallbackColumn = 0;
+      if (resolveSymbolFallbackAtPosition(filePath, line, character,
+                                          &fallbackText, &fallbackPath,
+                                          &fallbackLine, &fallbackColumn)) {
+        shown = fallbackText;
+      }
+    } else if (!definitionPath.trimmed().isEmpty()) {
+      shown += QLatin1Char('\n');
+      shown += QLatin1Char('\n');
+      shown += originSummaryForPath(definitionPath,
+                                    normalizeSketchFolderPath(filePath));
+      shown += QLatin1Char('\n');
+      shown += tr("Definition: %1:%2").arg(definitionPath).arg(definitionLine);
+      shown += QLatin1Char('\n');
+      shown += tr("Press F12 to jump to definition.");
+    }
+
+    if (shown.trimmed().isEmpty()) {
+      if (!silent) {
+        showToast(tr("No hover information available."));
+      }
+      return;
+    }
+
+    const QString compact = shown.size() > 1800 ? shown.left(1800) : shown;
+    QToolTip::showText(globalPos, compact, safePlain);
+  };
+
+  if (!lsp_ || !lsp_->isReady()) {
+    QString fallbackText;
+    QString fallbackPath;
+    int fallbackLine = 0;
+    int fallbackColumn = 0;
+    if (resolveSymbolFallbackAtPosition(filePath, line, character,
+                                        &fallbackText, &fallbackPath,
+                                        &fallbackLine, &fallbackColumn)) {
+      hideHoverBusyIndicator(hoverToken);
+      const QString compact =
+          fallbackText.size() > 1800 ? fallbackText.left(1800) : fallbackText;
+      QToolTip::showText(globalPos, compact, plain);
+      return;
+    }
+    hideHoverBusyIndicator(hoverToken);
+    if (!silent) {
+      showToast(tr("Language server is not ready."));
+    }
+    return;
+  }
 
   const QJsonObject params{
       {QStringLiteral("textDocument"),
@@ -9682,28 +12013,85 @@ void MainWindow::showHover() {
 
   lsp_->request(
       QStringLiteral("textDocument/hover"), params,
-      [this, plain](const QJsonValue& result, const QJsonObject& error) {
-        if (!error.isEmpty() || !result.isObject()) {
-          showToast(tr("No hover information available."));
+      [this, params, safePlain, showResolvedHover, silent,
+       hoverToken](const QJsonValue& result, const QJsonObject& error) {
+        if (hoverToken != hoverBusyToken_) {
           return;
         }
-        const QJsonObject hoverObj = result.toObject();
-        const QString text =
-            hoverContentsToText(hoverObj.value(QStringLiteral("contents")))
-                .trimmed();
-        if (text.isEmpty()) {
-          showToast(tr("No hover information available."));
+        if (!safePlain) {
+          hideHoverBusyIndicator(hoverToken);
           return;
         }
-        const QString shown = text.size() > 1200 ? text.left(1200) : text;
-        QToolTip::showText(plain->mapToGlobal(plain->cursorRect().bottomRight()),
-                           shown, plain);
+
+        QString hoverText;
+        if (error.isEmpty() && result.isObject()) {
+          const QJsonObject hoverObj = result.toObject();
+          hoverText =
+              hoverContentsToText(hoverObj.value(QStringLiteral("contents")))
+                  .trimmed();
+        }
+
+        if (!lsp_ || !lsp_->isReady()) {
+          showResolvedHover(hoverText, QString{}, 0);
+          return;
+        }
+
+        lsp_->request(
+            QStringLiteral("textDocument/definition"), params,
+            [this, showResolvedHover, hoverText, silent,
+             hoverToken](const QJsonValue& defResult,
+                         const QJsonObject& defError) {
+              if (hoverToken != hoverBusyToken_) {
+                return;
+              }
+              QString defPath;
+              int defLine = 0;
+              int defColumn = 0;
+              if (defError.isEmpty() &&
+                  parseFirstLspLocation(defResult, &defPath, &defLine, &defColumn)) {
+                showResolvedHover(hoverText, defPath, defLine);
+                return;
+              }
+              showResolvedHover(hoverText, QString{}, 0);
+              if (hoverText.trimmed().isEmpty() && !silent) {
+                // showResolvedHover already handled fallback+toast where possible.
+              }
+            });
       });
 }
 
+bool MainWindow::goToDefinitionFallback(const QString& filePath,
+                                        int line,
+                                        int character,
+                                        bool showFeedback) {
+  QString hoverText;
+  QString targetPath;
+  int targetLine = 0;
+  int targetColumn = 0;
+  if (!resolveSymbolFallbackAtPosition(filePath, line, character,
+                                       &hoverText, &targetPath, &targetLine,
+                                       &targetColumn)) {
+    if (showFeedback) {
+      showToast(
+          tr("Definition not found. Run Verify once or install arduino-language-server."));
+    }
+    return false;
+  }
+
+  if (!editor_ ||
+      !editor_->openLocation(targetPath, qMax(1, targetLine),
+                             qMax(1, targetColumn))) {
+    if (showFeedback) {
+      showToast(tr("Could not open definition location."));
+    }
+    return false;
+  }
+
+  return true;
+}
+
 void MainWindow::goToDefinition() {
-  if (!lsp_ || !lsp_->isReady() || !editor_) {
-    showToast(tr("Language server is not ready."));
+  if (!editor_) {
     return;
   }
 
@@ -9718,6 +12106,11 @@ void MainWindow::goToDefinition() {
   const int line = qMax(0, block.blockNumber());
   const int character = qMax(0, cursor.position() - block.position());
 
+  if (!lsp_ || !lsp_->isReady()) {
+    (void)goToDefinitionFallback(filePath, line, character, true);
+    return;
+  }
+
   const QJsonObject params{
       {QStringLiteral("textDocument"),
        QJsonObject{{QStringLiteral("uri"), toFileUri(filePath)}}},
@@ -9728,54 +12121,26 @@ void MainWindow::goToDefinition() {
 
   lsp_->request(
       QStringLiteral("textDocument/definition"), params,
-      [this](const QJsonValue& result, const QJsonObject& error) {
-        if (!editor_ || !error.isEmpty()) {
-          showToast(tr("Definition lookup failed."));
+      [this, filePath, line, character](const QJsonValue& result,
+                                        const QJsonObject& error) {
+        if (!editor_) {
           return;
         }
 
-        auto parseLocation = [](const QJsonObject& obj, QString* outPath,
-                                int* outLine, int* outColumn) {
-          if (!outPath || !outLine || !outColumn) {
-            return false;
+        if (!error.isEmpty()) {
+          if (!goToDefinitionFallback(filePath, line, character, false)) {
+            showToast(tr("Definition lookup failed."));
           }
-          QString uri = obj.value(QStringLiteral("uri")).toString().trimmed();
-          if (uri.isEmpty()) {
-            uri = obj.value(QStringLiteral("targetUri")).toString().trimmed();
-          }
-          QJsonObject range = obj.value(QStringLiteral("range")).toObject();
-          if (range.isEmpty()) {
-            range = obj.value(QStringLiteral("targetSelectionRange")).toObject();
-          }
-          if (range.isEmpty()) {
-            range = obj.value(QStringLiteral("targetRange")).toObject();
-          }
-          const QJsonObject start = range.value(QStringLiteral("start")).toObject();
-          const QString path = pathFromUriOrPath(uri);
-          if (path.isEmpty() || start.isEmpty()) {
-            return false;
-          }
-          *outPath = path;
-          *outLine = start.value(QStringLiteral("line")).toInt() + 1;
-          *outColumn = start.value(QStringLiteral("character")).toInt() + 1;
-          return true;
-        };
-
-        QJsonObject locationObj;
-        if (result.isArray()) {
-          const QJsonArray arr = result.toArray();
-          if (!arr.isEmpty() && arr.first().isObject()) {
-            locationObj = arr.first().toObject();
-          }
-        } else if (result.isObject()) {
-          locationObj = result.toObject();
+          return;
         }
 
         QString targetPath;
         int targetLine = 0;
         int targetColumn = 0;
-        if (!parseLocation(locationObj, &targetPath, &targetLine, &targetColumn)) {
-          showToast(tr("Definition not found."));
+        if (!parseFirstLspLocation(result, &targetPath, &targetLine, &targetColumn)) {
+          if (!goToDefinitionFallback(filePath, line, character, false)) {
+            showToast(tr("Definition not found."));
+          }
           return;
         }
 
@@ -10342,24 +12707,65 @@ void MainWindow::verifySketch() {
     return;
   }
 
-  if (editor_) {
-    editor_->saveAll();
-  }
-
   if (currentFqbn().isEmpty()) {
     QMessageBox::warning(this, tr("No Board Selected"),
                          tr("Please select a board first."));
     return;
   }
 
+  const bool autoUpdateMetadata = actionAutoUpdateRewrittoSection_ &&
+                                  actionAutoUpdateRewrittoSection_->isChecked();
+  auto resetPreBuildBusyUi = [this] {
+    lastCliJobKind_ = CliJobKind::None;
+    currentCliPhaseText_.clear();
+    if (cliBusy_) {
+      cliBusy_->hide();
+    }
+    if (cliBusyLabel_) {
+      cliBusyLabel_->hide();
+    }
+    updateStopActionState();
+  };
+
+  if (autoUpdateMetadata) {
+    lastCliJobKind_ = CliJobKind::Compile;
+    beginCliProgress(lastCliJobKind_);
+    setCliProgressValue(
+        10, tr("%1 · preparing metadata").arg(cliJobLabel(lastCliJobKind_)));
+    updateStopActionState();
+    QCoreApplication::processEvents();
+
+    QString metadataError;
+    QStringList warnings;
+    if (!upsertRewrittoSectionInSketch(sketchFolder, false, &metadataError,
+                                       &warnings)) {
+      resetPreBuildBusyUi();
+      QMessageBox::warning(
+          this, tr("Rewritto Section"),
+          metadataError.isEmpty()
+              ? tr("Could not update the Rewritto section before verifying.")
+              : metadataError);
+      return;
+    }
+    if (output_) {
+      for (const QString& warning : warnings) {
+        const QString trimmed = warning.trimmed();
+        if (!trimmed.isEmpty()) {
+          output_->appendLine(tr("[Rewritto section] %1").arg(trimmed));
+        }
+      }
+    }
+  }
+
+  if (editor_) {
+    editor_->saveAll();
+  }
+
   if (!arduinoCli_) return;
 
   lastCliJobKind_ = CliJobKind::Compile;
   output_->clear();
-  if (outputDock_) {
-    outputDock_->show();
-    outputDock_->raise();
-  }
+  focusOutputDock();
   output_->appendHtml(QString("<b>%1</b>").arg(tr("Compiling sketch...")));
   updateStopActionState();
 
@@ -10430,10 +12836,7 @@ void MainWindow::fastUploadSketch() {
 
   lastCliJobKind_ = CliJobKind::Upload;
   output_->clear();
-  if (outputDock_) {
-    outputDock_->show();
-    outputDock_->raise();
-  }
+  focusOutputDock();
   output_->appendHtml(QString("<b>%1</b>").arg(tr("Uploading prebuilt binary...")));
   updateStopActionState();
 
@@ -10476,10 +12879,6 @@ void MainWindow::uploadSketch() {
     return;
   }
 
-  if (editor_) {
-    editor_->saveAll();
-  }
-
   const QString fqbn = currentFqbn().trimmed();
   if (fqbn.isEmpty()) {
     QMessageBox::warning(this, tr("No Board Selected"),
@@ -10500,13 +12899,58 @@ void MainWindow::uploadSketch() {
     return;
   }
 
+  const bool autoUpdateMetadata = actionAutoUpdateRewrittoSection_ &&
+                                  actionAutoUpdateRewrittoSection_->isChecked();
+  auto resetPreBuildBusyUi = [this] {
+    lastCliJobKind_ = CliJobKind::None;
+    currentCliPhaseText_.clear();
+    if (cliBusy_) {
+      cliBusy_->hide();
+    }
+    if (cliBusyLabel_) {
+      cliBusyLabel_->hide();
+    }
+    updateStopActionState();
+  };
+
+  if (autoUpdateMetadata) {
+    lastCliJobKind_ = CliJobKind::UploadCompile;
+    beginCliProgress(lastCliJobKind_);
+    setCliProgressValue(
+        10, tr("%1 · preparing metadata").arg(cliJobLabel(lastCliJobKind_)));
+    updateStopActionState();
+    QCoreApplication::processEvents();
+
+    QString metadataError;
+    QStringList warnings;
+    if (!upsertRewrittoSectionInSketch(sketchFolder, false, &metadataError,
+                                       &warnings)) {
+      resetPreBuildBusyUi();
+      QMessageBox::warning(
+          this, tr("Rewritto Section"),
+          metadataError.isEmpty()
+              ? tr("Could not update the Rewritto section before upload.")
+              : metadataError);
+      return;
+    }
+    if (output_) {
+      for (const QString& warning : warnings) {
+        const QString trimmed = warning.trimmed();
+        if (!trimmed.isEmpty()) {
+          output_->appendLine(tr("[Rewritto section] %1").arg(trimmed));
+        }
+      }
+    }
+  }
+
+  if (editor_) {
+    editor_->saveAll();
+  }
+
   // First compile, then upload
   lastCliJobKind_ = CliJobKind::UploadCompile;
   output_->clear();
-  if (outputDock_) {
-    outputDock_->show();
-    outputDock_->raise();
-  }
+  focusOutputDock();
   output_->appendHtml(QString("<b>%1</b>").arg(tr("Compiling sketch for upload...")));
   updateStopActionState();
 
@@ -10515,12 +12959,12 @@ void MainWindow::uploadSketch() {
   const bool verbose = settings.value("verboseCompile", false).toBool();
   const QString warningsLevel = settings.value("compilerWarnings", "none").toString();
   const bool verboseUpload = settings.value("verboseUpload", false).toBool();
-	  settings.endGroup();
+  settings.endGroup();
 
-	  QStringList args = {"compile", "--fqbn", fqbn, "--warnings", warningsLevel};
-	  if (verbose) {
-	    args << "--verbose";
-	  }
+  QStringList args = {"compile", "--fqbn", fqbn, "--warnings", warningsLevel};
+  if (verbose) {
+    args << "--verbose";
+  }
   if (actionOptimizeForDebug_ && actionOptimizeForDebug_->isChecked()) {
     args << "--optimize-for-debug";
   }
@@ -10530,27 +12974,27 @@ void MainWindow::uploadSketch() {
   args << "--build-path" << buildDir.absolutePath();
   args << sketchFolder;
 
-	  // Store pending upload info
-	  pendingUploadFlow_.sketchFolder = sketchFolder;
-	  pendingUploadFlow_.buildPath = buildDir.absolutePath();
-	  pendingUploadFlow_.fqbn = fqbn;
-	  pendingUploadFlow_.port = selectedPort;
-	  pendingUploadFlow_.protocol =
-	      selectedPort.isEmpty() ? QString{} : currentPortProtocol();
-	  pendingUploadFlow_.verboseCompile = verbose;
-	  pendingUploadFlow_.verboseUpload = verboseUpload;
-	  pendingUploadFlow_.useInputDir = true;
-	  pendingUploadFlow_.allowMissingPort = allowMissingPort;
-	  pendingUploadFlow_.uf2FallbackAttempted = false;
-	  pendingUploadFlow_.warnings = warningsLevel;
-	  pendingUploadFlow_.finalJobKind = CliJobKind::Upload;
+  // Store pending upload info
+  pendingUploadFlow_.sketchFolder = sketchFolder;
+  pendingUploadFlow_.buildPath = buildDir.absolutePath();
+  pendingUploadFlow_.fqbn = fqbn;
+  pendingUploadFlow_.port = selectedPort;
+  pendingUploadFlow_.protocol =
+      selectedPort.isEmpty() ? QString{} : currentPortProtocol();
+  pendingUploadFlow_.verboseCompile = verbose;
+  pendingUploadFlow_.verboseUpload = verboseUpload;
+  pendingUploadFlow_.useInputDir = true;
+  pendingUploadFlow_.allowMissingPort = allowMissingPort;
+  pendingUploadFlow_.uf2FallbackAttempted = false;
+  pendingUploadFlow_.warnings = warningsLevel;
+  pendingUploadFlow_.finalJobKind = CliJobKind::Upload;
 
   if (allowMissingPort && selectedPort.isEmpty()) {
     output_->appendLine(
         tr("No serial port selected. Will attempt UF2-based upload after compile."));
   }
 
-	  arduinoCli_->run(args);
+  arduinoCli_->run(args);
 }
 
 void MainWindow::stopOperation() {
@@ -10569,10 +13013,6 @@ void MainWindow::uploadUsingProgrammer() {
     return;
   }
 
-  if (editor_) {
-    editor_->saveAll();
-  }
-
   const QString fqbn = currentFqbn();
   if (fqbn.isEmpty()) {
     QMessageBox::warning(this, tr("No Board Selected"),
@@ -10587,6 +13027,54 @@ void MainWindow::uploadUsingProgrammer() {
     return;
   }
 
+  const bool autoUpdateMetadata = actionAutoUpdateRewrittoSection_ &&
+                                  actionAutoUpdateRewrittoSection_->isChecked();
+  auto resetPreBuildBusyUi = [this] {
+    lastCliJobKind_ = CliJobKind::None;
+    currentCliPhaseText_.clear();
+    if (cliBusy_) {
+      cliBusy_->hide();
+    }
+    if (cliBusyLabel_) {
+      cliBusyLabel_->hide();
+    }
+    updateStopActionState();
+  };
+
+  if (autoUpdateMetadata) {
+    lastCliJobKind_ = CliJobKind::UploadCompile;
+    beginCliProgress(lastCliJobKind_);
+    setCliProgressValue(
+        10, tr("%1 · preparing metadata").arg(cliJobLabel(lastCliJobKind_)));
+    updateStopActionState();
+    QCoreApplication::processEvents();
+
+    QString metadataError;
+    QStringList warnings;
+    if (!upsertRewrittoSectionInSketch(sketchFolder, false, &metadataError,
+                                       &warnings)) {
+      resetPreBuildBusyUi();
+      QMessageBox::warning(
+          this, tr("Rewritto Section"),
+          metadataError.isEmpty()
+              ? tr("Could not update the Rewritto section before upload.")
+              : metadataError);
+      return;
+    }
+    if (output_) {
+      for (const QString& warning : warnings) {
+        const QString trimmed = warning.trimmed();
+        if (!trimmed.isEmpty()) {
+          output_->appendLine(tr("[Rewritto section] %1").arg(trimmed));
+        }
+      }
+    }
+  }
+
+  if (editor_) {
+    editor_->saveAll();
+  }
+
   if (!arduinoCli_) {
     return;
   }
@@ -10597,10 +13085,7 @@ void MainWindow::uploadUsingProgrammer() {
   // First compile, then upload (using programmer).
   lastCliJobKind_ = CliJobKind::UploadCompile;
   output_->clear();
-  if (outputDock_) {
-    outputDock_->show();
-    outputDock_->raise();
-  }
+  focusOutputDock();
   output_->appendHtml(
       QString("<b>%1</b>").arg(tr("Compiling sketch for upload using programmer...")));
   updateStopActionState();
@@ -10853,6 +13338,7 @@ void MainWindow::addZipLibrary() {
     output_->appendLine(tr("Installing library from: %1").arg(filePath));
 
     if (arduinoCli_) {
+      invalidateIncludeLibraryCache();
       lastCliJobKind_ = CliJobKind::LibraryInstall;
       updateStopActionState();
       arduinoCli_->run({"lib", "install", filePath});
@@ -11866,41 +14352,11 @@ void MainWindow::runEnvironmentDoctor() {
 
 // === Tools Menu Actions ===
 void MainWindow::toggleSerialMonitor() {
-  if (!serialDock_) return;
-
-  if (serialDock_->isVisible()) {
-    serialDock_->hide();
-    actionSerialMonitor_->setChecked(false);
-  } else {
-    serialDock_->show();
-    serialDock_->raise();
-    actionSerialMonitor_->setChecked(true);
-
-    // Make sure serial plotter is unchecked when opening monitor
-    if (serialPlotterDock_ && serialPlotterDock_->isVisible()) {
-      serialPlotterDock_->hide();
-      actionSerialPlotter_->setChecked(false);
-    }
-  }
+  setBottomPanelView(BottomPanelView::SerialMonitor);
 }
 
 void MainWindow::toggleSerialPlotter() {
-  if (!serialPlotterDock_) return;
-
-  if (serialPlotterDock_->isVisible()) {
-    serialPlotterDock_->hide();
-    actionSerialPlotter_->setChecked(false);
-  } else {
-    serialPlotterDock_->show();
-    serialPlotterDock_->raise();
-    actionSerialPlotter_->setChecked(true);
-
-    // Make sure serial monitor is unchecked when opening plotter
-    if (serialDock_ && serialDock_->isVisible()) {
-      serialDock_->hide();
-      actionSerialMonitor_->setChecked(false);
-    }
-  }
+  setBottomPanelView(BottomPanelView::SerialPlotter);
 }
 
 void MainWindow::getBoardInfo() {
@@ -12053,10 +14509,7 @@ void MainWindow::burnBootloader() {
 
     lastCliJobKind_ = CliJobKind::BurnBootloader;
     output_->clear();
-    if (outputDock_) {
-      outputDock_->show();
-      outputDock_->raise();
-    }
+    focusOutputDock();
     output_->appendLine(tr("Burning bootloader..."));
     updateStopActionState();
 
@@ -12942,12 +15395,58 @@ void MainWindow::showToastWithAction(const QString& message,
   }
 }
 
-void MainWindow::focusOutputDock() {
-  if (!outputDock_) {
-    return;
+void MainWindow::setBottomPanelView(BottomPanelView view, bool ensureVisible) {
+  bottomPanelView_ = view;
+
+  if (outputDock_ && ensureVisible) {
+    outputDock_->show();
+    outputDock_->raise();
   }
-  outputDock_->show();
-  outputDock_->raise();
+
+  if (bottomPanelStack_) {
+    int index = 0;
+    switch (view) {
+      case BottomPanelView::Output:
+        index = 0;
+        break;
+      case BottomPanelView::SerialMonitor:
+        index = 1;
+        break;
+      case BottomPanelView::SerialPlotter:
+        index = 2;
+        break;
+    }
+    if (index >= 0 && index < bottomPanelStack_->count()) {
+      bottomPanelStack_->setCurrentIndex(index);
+    }
+  }
+
+  if (actionBottomPanelOutput_) {
+    const QSignalBlocker blocker(actionBottomPanelOutput_);
+    actionBottomPanelOutput_->setChecked(view == BottomPanelView::Output);
+  }
+  if (actionBottomPanelSerialMonitor_) {
+    const QSignalBlocker blocker(actionBottomPanelSerialMonitor_);
+    actionBottomPanelSerialMonitor_->setChecked(
+        view == BottomPanelView::SerialMonitor);
+  }
+  if (actionBottomPanelSerialPlotter_) {
+    const QSignalBlocker blocker(actionBottomPanelSerialPlotter_);
+    actionBottomPanelSerialPlotter_->setChecked(
+        view == BottomPanelView::SerialPlotter);
+  }
+  if (actionSerialMonitor_) {
+    const QSignalBlocker blocker(actionSerialMonitor_);
+    actionSerialMonitor_->setChecked(view == BottomPanelView::SerialMonitor);
+  }
+  if (actionSerialPlotter_) {
+    const QSignalBlocker blocker(actionSerialPlotter_);
+    actionSerialPlotter_->setChecked(view == BottomPanelView::SerialPlotter);
+  }
+}
+
+void MainWindow::focusOutputDock() {
+  setBottomPanelView(BottomPanelView::Output);
 }
 
 void MainWindow::focusBoardsManagerSearch(const QString& query) {

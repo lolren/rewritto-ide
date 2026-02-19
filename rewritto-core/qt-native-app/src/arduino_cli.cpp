@@ -132,6 +132,10 @@ ArduinoCli::ArduinoCli(QObject* parent) : QObject(parent) {
   });
   connect(process_, &QProcess::finished, this,
           [this](int exitCode, QProcess::ExitStatus exitStatus) {
+            if (!lineBuffer_.isEmpty()) {
+              consumeLine(lineBuffer_);
+              lineBuffer_.clear();
+            }
             flushPendingDiagnostic();
             emit finished(exitCode, exitStatus);
           });

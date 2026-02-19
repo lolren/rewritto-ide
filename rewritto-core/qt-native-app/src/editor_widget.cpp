@@ -545,6 +545,23 @@ bool EditorWidget::saveAs(const QString& filePath) {
   return saveEditorAs(editor, filePath);
 }
 
+bool EditorWidget::saveFile(const QString& filePath) {
+  const QString normalizedPath = QFileInfo(filePath).absoluteFilePath();
+  if (normalizedPath.trimmed().isEmpty()) {
+    return false;
+  }
+
+  auto* editor = editorForFile(normalizedPath);
+  if (!editor) {
+    return false;
+  }
+
+  const QString currentPath = filePathFor(editor).trimmed();
+  const QString targetPath =
+      currentPath.isEmpty() ? normalizedPath : currentPath;
+  return saveEditorAs(editor, targetPath);
+}
+
 bool EditorWidget::saveCopyAs(const QString& filePath) {
   auto* editor = currentEditor();
   if (!editor || filePath.trimmed().isEmpty()) {

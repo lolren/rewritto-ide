@@ -22,8 +22,10 @@ class QFileSystemModel;
 class QDockWidget;
 class QMenu;
 class QCompleter;
+class QModelIndex;
 class QStandardItemModel;
 class QPlainTextEdit;
+class QTextDocument;
 class QTabWidget;
 class QTreeView;
 class QToolBar;
@@ -33,6 +35,7 @@ class QProcess;
 class QTimer;
 class QLabel;
 class QLineEdit;
+class QPoint;
 class QPushButton;
 class QTreeWidget;
 class QStackedWidget;
@@ -88,6 +91,12 @@ class MainWindow final : public QMainWindow {
     Plotter,
   };
 
+  enum class BottomPanelView {
+    Output,
+    SerialMonitor,
+    SerialPlotter,
+  };
+
   enum class ContextToolbarMode {
     Fonts,
     Snapshots,
@@ -119,6 +128,14 @@ class MainWindow final : public QMainWindow {
   ToastWidget* toast_ = nullptr;
   OutputWidget* output_ = nullptr;
   QDockWidget* outputDock_ = nullptr;
+  QWidget* bottomPanelContainer_ = nullptr;
+  QToolBar* bottomPanelSelectorBar_ = nullptr;
+  QStackedWidget* bottomPanelStack_ = nullptr;
+  QAction* actionBottomPanelOutput_ = nullptr;
+  QAction* actionBottomPanelSerialMonitor_ = nullptr;
+  QAction* actionBottomPanelSerialPlotter_ = nullptr;
+  QActionGroup* bottomPanelSelectorGroup_ = nullptr;
+  BottomPanelView bottomPanelView_ = BottomPanelView::Output;
   ProblemsWidget* problems_ = nullptr;
   QDockWidget* problemsDock_ = nullptr;
   QDockWidget* debugDock_ = nullptr;
@@ -130,9 +147,7 @@ class MainWindow final : public QMainWindow {
 
   SerialPort* serialPort_ = nullptr;
   SerialMonitorWidget* serialMonitor_ = nullptr;
-  QDockWidget* serialDock_ = nullptr;
   SerialPlotterWidget* serialPlotter_ = nullptr;
-  QDockWidget* serialPlotterDock_ = nullptr;
 
   QToolBar* buildToolBar_ = nullptr;
   QToolBar* sideBarToolBar_ = nullptr;
@@ -268,6 +283,8 @@ class MainWindow final : public QMainWindow {
   QAction* actionArchiveSketch_ = nullptr;
   QAction* actionWiFiFirmwareUpdater_ = nullptr;
   QAction* actionUploadSSL_ = nullptr;
+  QAction* actionUpdateRewrittoSection_ = nullptr;
+  QAction* actionAutoUpdateRewrittoSection_ = nullptr;
   QAction* actionExportSetupProfile_ = nullptr;
   QAction* actionImportSetupProfile_ = nullptr;
   QAction* actionGenerateProjectLockfile_ = nullptr;
@@ -303,6 +320,16 @@ class MainWindow final : public QMainWindow {
   QTimer* boardOptionsRefreshTimer_ = nullptr;
   QVector<QAction*> includeLibraryMenuActions_;
   QProcess* includeLibraryProcess_ = nullptr;
+  struct IncludeLibraryEntry final {
+    QString name;
+    QString version;
+    QString location;
+    QString installDir;
+    QString sourceDir;
+    QStringList includes;
+  };
+  QVector<IncludeLibraryEntry> includeLibraryCache_;
+  bool includeLibraryCacheDirty_ = true;
 
   // Required tools for the current board (from board details)
   struct RequiredTool final {
@@ -316,6 +343,18 @@ class MainWindow final : public QMainWindow {
 
   QStandardItemModel* completionModel_ = nullptr;
   QCompleter* completer_ = nullptr;
+  QTimer* inlineCompletionTimer_ = nullptr;
+  int inlineCompletionToken_ = 0;
+  int inlineCompletionReplaceStart_ = -1;
+  int inlineCompletionReplaceEnd_ = -1;
+  QString inlineCompletionFilePath_;
+  QWidget* hoverBusyIndicator_ = nullptr;
+  QProgressBar* hoverBusyIndicatorBar_ = nullptr;
+  QLabel* hoverBusyIndicatorLabel_ = nullptr;
+  QTimer* hoverBusyIndicatorTimer_ = nullptr;
+  QPoint hoverBusyIndicatorPos_;
+  int hoverBusyToken_ = 0;
+  int hoverBusyPendingToken_ = 0;
   FindReplaceDialog* findReplaceDialog_ = nullptr;
   QLineEdit* debugProgrammerEdit_ = nullptr;
   QPushButton* debugCheckButton_ = nullptr;
@@ -413,6 +452,7 @@ class MainWindow final : public QMainWindow {
   QString currentSketchFolderPath() const;
   bool openSketchFolderInUi(const QString& folder);
   void rebuildIncludeLibraryMenu();
+  void invalidateIncludeLibraryCache();
   void showExamplesDialog(QString initialFilter = {});
   void insertLibraryIncludes(const QString& libraryName, const QStringList& includes);
   void clearIncludeLibraryMenuActions();
@@ -460,6 +500,15 @@ class MainWindow final : public QMainWindow {
   void rememberSuccessfulCompileArtifact(const QString& sketchFolder,
                                          const QString& fqbn,
                                          const QString& buildPath);
+  QString primarySketchInoPath(const QString& sketchFolder) const;
+  QString buildRewrittoSectionBlock(const QString& sketchFolder,
+                                    QStringList* outWarnings = nullptr) const;
+  bool upsertRewrittoSectionInSketch(const QString& sketchFolder,
+                                     bool saveIfOpenEditor,
+                                     QString* outError = nullptr,
+                                     QStringList* outWarnings = nullptr);
+  QString lastCompileTimestampForSketch(const QString& sketchFolder) const;
+  void recordCompileTimestampForSketch(const QString& sketchFolder);
   void markSketchAsChanged(const QString& filePath);
   QString computeSketchSignature(const QString& sketchFolder) const;
   bool canUploadWithoutCompile(QString* reason = nullptr) const;
@@ -475,6 +524,7 @@ class MainWindow final : public QMainWindow {
                            const QString& actionText,
                            std::function<void()> action,
                            int timeoutMs = 5000);
+  void setBottomPanelView(BottomPanelView view, bool ensureVisible = true);
   void focusOutputDock();
   void focusBoardsManagerSearch(const QString& query);
   void focusLibraryManagerSearch(const QString& query);
@@ -536,6 +586,7 @@ class MainWindow final : public QMainWindow {
   void archiveSketch();
   void showWiFiFirmwareUpdater();
   void uploadSslRootCertificates();
+  void updateRewrittoSection();
   void setProgrammer(const QString& programmer);
   void setBoardOption(const QString& optionId, const QString& valueId);
 
@@ -581,8 +632,32 @@ class MainWindow final : public QMainWindow {
                         std::function<void(const QString& status)> progressCallback = {});
 
   void requestCompletion();
+  void triggerInlineCompletion(bool manual);
+  void applyInlineCompletionFromIndex(const QModelIndex& index);
+  QStringList fallbackInlineCompletionWords(const QString& sketchFolder,
+                                            QTextDocument* doc) const;
   void showHover();
+  void scheduleHoverBusyIndicator(const QPoint& globalPos, int token);
+  void showHoverBusyIndicator(const QPoint& globalPos);
+  void hideHoverBusyIndicator(int token);
+  void showHoverAtPosition(QPlainTextEdit* plain,
+                           const QString& filePath,
+                           int line,
+                           int character,
+                           const QPoint& globalPos,
+                           bool silent);
   void goToDefinition();
+  bool goToDefinitionFallback(const QString& filePath,
+                              int line,
+                              int character,
+                              bool showFeedback);
+  bool resolveSymbolFallbackAtPosition(const QString& filePath,
+                                       int line,
+                                       int character,
+                                       QString* outHoverText,
+                                       QString* outDefinitionPath,
+                                       int* outDefinitionLine,
+                                       int* outDefinitionColumn) const;
   void findReferences();
   void renameSymbol();
   void showCodeActions(QStringList onlyKinds = {});

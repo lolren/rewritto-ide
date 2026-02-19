@@ -27,6 +27,7 @@ class EditorWidget final : public QWidget {
   bool save();
   bool saveCurrentWithDialog();
   bool saveAs(const QString& filePath);
+  bool saveFile(const QString& filePath);
   bool saveCopyAs(const QString& filePath);
   bool saveAll();
   bool saveAllWithDialog();
